@@ -8,10 +8,14 @@ Implements the full workflow:
 3. Remove Indian contacts (by location/country + email domain)
 4. Remove special characters & Unicode junk, trim spaces
 5. Remove duplicates within file (by Email)
-6. Remove records already in Master File(s) (by Email)
-7. Remove bounced emails (by Master Bounce file, Email)
+6. Remove records already in selected Master list(s) from the database (by Email)
+7. Remove bounced emails from selected Bounce list(s) in the database (by Email)
 8. Arrange final column sequence
 9. Final quality check + summary report
+10. Optionally save the cleaned contacts back into a Master list (database)
+
+Master/Bounce suppression data lives in PostgreSQL (see db.py) and is managed on
+the "Manage Suppression Database" page — it is no longer uploaded on each run.
 """
 
 import io
@@ -26,675 +30,87 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="LeadFlow", layout="wide")
-st.session_state.setdefault("show_how_it_works", False)
+import db
+import theme
+
+st.set_page_config(
+    page_title="LeadFlow — Lead Data Cleaning",
+    page_icon="⚡",
+    layout="wide",
+)
+
+# --- Suppression database bootstrap ------------------------------------------
+# Master/Bounce suppression data now lives in PostgreSQL (see db.py). Create the
+# database + tables on first use; surface problems as a friendly banner instead
+# of crashing, so cleaning can still run (with suppression skipped) if the DB is
+# unavailable.
+if not st.session_state.get("_db_ready"):
+    _db_ok, _db_err = db.init_db()
+    st.session_state["_db_ready"] = _db_ok
+    st.session_state["_db_error"] = None if _db_ok else _db_err
 
 
-@st.dialog("How LeadFlow works")
-def show_how_it_works():
-    st.markdown(
-        """
-        ### Clean your lead data in 5 steps
+def db_is_ready():
+    return bool(st.session_state.get("_db_ready"))
 
-        **1. Upload your files**  
-        Upload your raw lead file and optionally provide Master and Bounce files.
 
-        **2. Review your data**  
-        Preview the uploaded data and confirm the detected column mapping.
-
-        **3. Run the cleaning pipeline**  
-        LeadFlow removes blank emails, filters Indian contacts, separates
-        special-character records, removes duplicate emails, and applies
-        Master/Bounce suppression.
-
-        **4. Review quality metrics**  
-        Inspect the processing results and final data quality.
-
-        **5. Export your files**  
-        Download the final campaign-ready file and optional country,
-        industry, and audit files.
-        """
+def render_db_error_banner():
+    err = st.session_state.get("_db_error") or "Unknown error"
+    st.error(
+        "⚠️ **Can't reach the suppression database.** Master/Bounce suppression "
+        "and saving cleaned contacts are unavailable until it's connected. "
+        "You can still clean files — those steps will simply be skipped."
     )
-
-
-def render_topbar():
-    top_left, top_how = st.columns([9, 2])
-
-    with top_left:
+    with st.expander("How to fix this", expanded=False):
         st.markdown(
-            """
-            <div class="lf-brand-wrap">
-                <div class="lf-brand">LeadFlow</div>
-                <div class="lf-tagline">
-                    Turn messy lead data into clean, campaign-ready contacts.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+            "1. Make sure **PostgreSQL is running**.\n"
+            "2. Check your connection settings in `.streamlit/secrets.toml` "
+            "(host, port, dbname, user, password).\n"
+            "3. See the **README** for full setup steps.\n\n"
+            f"**Technical details:** `{err}`"
         )
+        if st.button("🔄 Retry database connection", key="retry_db_conn"):
+            st.session_state.pop("_db_ready", None)
+            st.session_state.pop("_db_error", None)
+            st.rerun()
 
-    with top_how:
-        if st.button(
-            "How it works",
-            key="how_it_works_btn",
-            use_container_width=True,
-        ):
-            show_how_it_works()
 
+def cleaned_df_to_records(df):
+    """Convert a cleaned DataFrame into contact dicts for db.upsert_master_contacts."""
+    col_map = {
+        "First Name": "first_name",
+        "Last Name": "last_name",
+        "Company": "company",
+        "Email": "email",
+        "Job Title": "job_title",
+        "Industry": "industry",
+        "Location": "location",
+    }
+    present_cols = [c for c in col_map if c in df.columns]
+    keys = [col_map[c] for c in present_cols]
+    records = []
+    for row in df[present_cols].itertuples(index=False, name=None):
+        records.append(dict(zip(keys, row)))
+    return records
+
+
+# -- Inject theme CSS & sidebar branding (shared with all pages) --
+theme.inject_theme()
+theme.inject_sidebar_title()
 
 st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
-render_topbar()
+theme.render_topbar()
 st.markdown('</div>', unsafe_allow_html=True)
 
-
-SECTION_ICONS = {
-    "Upload": "📤",
-    "Review Data": "🔍",
-    "Configure": "⚙️",
-    "Run Processing": "▶️",
-    "Review Results": "📊",
-    "Download": "⬇️",
-}
+if not db_is_ready():
+    render_db_error_banner()
 
 
+# Use shared section_header from theme module
 def section_header(number, title):
-    """Renders a numbered section badge + kicker + heading. Visual only —
-    `number` and `title` are passed through exactly as before by every caller."""
-    icon = SECTION_ICONS.get(title, "")
-    step_no = number.split("-", 1)[0].strip()
-    kicker = number.split("-", 1)[1].strip() if "-" in number else title
-    st.markdown(
-        f"""
-        <div class="lf-section-head">
-            <div class="lf-section-badge">{step_no}</div>
-            <div class="lf-section-text">
-                <div class="lf-section-kicker">{kicker}</div>
-                <h2>{icon}&nbsp;{title}</h2>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    theme.section_header(number, title)
 
 
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
-
-    :root {
-        --lf-bg: #f7f8fc;
-        --lf-surface: #ffffff;
-        --lf-border: #dde2ef;
-        --lf-title: #161a2d;
-        --lf-body: #4c5268;
-        --lf-muted: #7f869b;
-        --lf-primary: #3c37d6;
-        --lf-primary-2: #5a56eb;
-        --lf-primary-soft: #eef0ff;
-        --lf-success: #12875e;
-        --lf-success-soft: #e5f7ef;
-        --lf-danger: #c0362c;
-        --lf-danger-soft: #fdecea;
-        --lf-shadow-sm: 0 1px 2px rgba(22, 26, 45, 0.05);
-        --lf-shadow-md: 0 8px 20px rgba(22, 26, 45, 0.06);
-        --lf-shadow-primary: 0 10px 20px rgba(60, 55, 214, 0.22);
-        --lf-radius: 14px;
-    }
-
-    html, body, [class*="css"] {
-        font-family: "Manrope", "Segoe UI", sans-serif !important;
-    }
-
-    .stApp {
-        background:
-            radial-gradient(1000px 300px at 80% -10%, #e9ecff 0%, rgba(233, 236, 255, 0) 65%),
-            linear-gradient(180deg, #fafbff 0%, var(--lf-bg) 45%, #f6f7fb 100%);
-    }
-
-    [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
-        max-width: 1120px;
-        padding-top: 5.25rem;
-        padding-bottom: 3rem;
-    }
-
-    /* Keep custom app header visible below Streamlit deploy/share header. */
-    [data-testid="stHeader"] {
-        background: rgba(247, 248, 252, 0.85);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
-    }
-
-    /* ---------------------------------------------------------------
-       TOP BAR
-       --------------------------------------------------------------- */
-    .lf-topbar {
-        padding: 0.2rem 0 1.1rem;
-        border-bottom: 1px solid #e7eaf4;
-        margin-bottom: 1rem;
-    }
-
-    .lf-brand-wrap {
-        display: flex;
-        align-items: baseline;
-        gap: 0.75rem;
-        flex-wrap: wrap;
-    }
-
-    .lf-brand {
-        font-size: 3rem;
-        font-weight: 800;
-        letter-spacing: -0.03em;
-        color: #3340df;
-    }
-
-    .lf-tagline {
-        color: var(--lf-muted);
-        font-size: 0.95rem;
-        font-weight: 500;
-    }
-
-    /* ---------------------------------------------------------------
-       SECTION HEADERS
-       --------------------------------------------------------------- */
-    .lf-section-head {
-        margin-top: 2.4rem;
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-        padding-bottom: 0.85rem;
-        border-bottom: 1px solid #e9ecf6;
-    }
-
-    .lf-section-badge {
-        flex-shrink: 0;
-        width: 46px;
-        height: 46px;
-        border-radius: 13px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 1.15rem;
-        font-weight: 800;
-        color: #ffffff;
-        background: linear-gradient(135deg, var(--lf-primary) 0%, var(--lf-primary-2) 100%);
-        box-shadow: 0 8px 16px rgba(60, 55, 214, 0.25);
-    }
-
-    .lf-section-kicker {
-        text-transform: uppercase;
-        letter-spacing: 0.09em;
-        font-size: 0.72rem;
-        font-weight: 700;
-        color: var(--lf-muted);
-        margin-bottom: 0.15rem;
-    }
-
-    .lf-section-head h2 {
-        margin: 0;
-        color: var(--lf-title);
-        font-size: 1.65rem;
-        line-height: 1.2;
-        letter-spacing: -0.01em;
-    }
-
-    /* ---------------------------------------------------------------
-       CARDS / PANELS / EXPANDERS
-       --------------------------------------------------------------- */
-    .lf-inline-panel {
-        border: 1px solid #dfe4f2;
-        border-radius: 12px;
-        background: #fbfcff;
-        padding: 0.85rem 1rem;
-        color: #2f3550;
-        margin: 0.25rem 0 1rem;
-    }
-
-    .lf-inline-panel ol {
-        margin: 0.5rem 0 0.2rem 1rem;
-    }
-
-    .upload-card {
-        border: 1px solid var(--lf-border);
-        border-radius: var(--lf-radius);
-        padding: 0.9rem 1.1rem;
-        background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
-        color: var(--lf-body);
-        font-weight: 600;
-        box-shadow: var(--lf-shadow-sm);
-        margin-bottom: 0.9rem;
-    }
-
-    [data-testid="stExpander"] {
-        border: 1px solid #dfe4f2 !important;
-        border-radius: var(--lf-radius) !important;
-        background: #fbfcff !important;
-        box-shadow: var(--lf-shadow-sm);
-        margin-bottom: 0.75rem;
-        overflow: hidden;
-    }
-
-    [data-testid="stExpander"] summary {
-        font-weight: 700 !important;
-        color: var(--lf-title) !important;
-        padding: 0.7rem 0.9rem !important;
-    }
-
-    [data-testid="stExpander"] summary:hover {
-        color: var(--lf-primary) !important;
-    }
-
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        border-radius: var(--lf-radius) !important;
-    }
-
-    /* ---------------------------------------------------------------
-       FILE UPLOADERS
-       --------------------------------------------------------------- */
-    .lf-upload-label {
-        font-weight: 700;
-        font-size: 0.92rem;
-        color: var(--lf-title);
-        margin-bottom: 0.15rem;
-        display: flex;
-        align-items: center;
-        gap: 0.4rem;
-    }
-
-    .lf-upload-required {
-        font-size: 0.68rem;
-        font-weight: 700;
-        color: var(--lf-primary);
-        background: var(--lf-primary-soft);
-        border-radius: 999px;
-        padding: 0.08rem 0.5rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-    }
-
-    .lf-upload-optional {
-        font-size: 0.68rem;
-        font-weight: 700;
-        color: var(--lf-muted);
-        background: #eef0f5;
-        border-radius: 999px;
-        padding: 0.08rem 0.5rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-    }
-
-    [data-testid="stFileUploaderDropzone"] svg {display: none;}
-    [data-testid="stFileUploaderDropzone"] {
-        border: 1px dashed #c7cdea;
-        border-radius: 12px;
-        background: #fbfcff;
-        transition: border-color 0.15s ease, background 0.15s ease;
-    }
-    [data-testid="stFileUploaderDropzone"]:hover {
-        border-color: var(--lf-primary);
-        background: #f3f4ff;
-    }
-    [data-testid="stFileUploaderDropzoneInstructions"] {padding-top: 0.5rem;}
-
-    /* Remove-file chip row: normal document flow (no overlay), so it never
-       covers the uploader's own "?" help tooltip. */
-    .lf-file-chip {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 0.5rem;
-        margin-top: 0.4rem;
-        padding: 0.3rem 0.6rem;
-        background: #fbfcff;
-        border: 1px solid var(--lf-border);
-        border-radius: 10px;
-    }
-
-    .lf-file-chip-name {
-        font-size: 0.82rem;
-        color: var(--lf-body);
-        font-weight: 600;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-/* ---------------------------------------------------------------
-   FILE REMOVE BUTTON
-   Red square with a text ✕
-   --------------------------------------------------------------- */
-
-[data-testid="stFileUploader"] button[aria-label*="Remove"],
-[data-testid="stFileUploader"] button[title*="Remove"] {
-    position: relative !important;
-
-    min-width: 25px !important;
-    width: 25px !important;
-    height: 25px !important;
-    min-height: 25px !important;
-
-    padding: 0 !important;
-
-    background: #d9534f !important;
-    border: 1px solid #d43f3a !important;
-    border-radius: 4px !important;
-
-    color: transparent !important;
-
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-
-    box-shadow: none !important;
-}
-
-/* Hide Streamlit's SVG */
-[data-testid="stFileUploader"] button[aria-label*="Remove"] svg,
-[data-testid="stFileUploader"] button[title*="Remove"] svg {
-    display: none !important;
-}
-
-/* Create our own ✕ */
-[data-testid="stFileUploader"] button[aria-label*="Remove"]::after,
-[data-testid="stFileUploader"] button[title*="Remove"]::after {
-    content: "✕";
-
-    color: #ffffff !important;
-
-    font-size: 16px !important;
-    font-weight: 700 !important;
-
-    line-height: 1 !important;
-
-    position: absolute !important;
-    top: 50% !important;
-    left: 50% !important;
-
-    transform: translate(-50%, -52%) !important;
-
-    pointer-events: none !important;
-}
-
-/* Hover */
-[data-testid="stFileUploader"] button[aria-label*="Remove"]:hover,
-[data-testid="stFileUploader"] button[title*="Remove"]:hover {
-    background: #c9302c !important;
-    border-color: #ac2925 !important;
-}
-    /* ---------------------------------------------------------------
-       ALERTS / METRICS / TABLES
-       --------------------------------------------------------------- */
-    [data-testid="stAlert"] {
-        border-radius: 12px;
-        border: 1px solid #d7ddef;
-        box-shadow: var(--lf-shadow-sm);
-    }
-
-    [data-testid="stMetric"] {
-        border: 1px solid var(--lf-border);
-        border-radius: 12px;
-        background: var(--lf-surface);
-        padding: 0.75rem 0.9rem;
-        box-shadow: var(--lf-shadow-sm);
-        transition: box-shadow 0.15s ease, transform 0.15s ease;
-    }
-
-    [data-testid="stMetric"]:hover {
-        box-shadow: var(--lf-shadow-md);
-        transform: translateY(-1px);
-    }
-
-    [data-testid="stMetricLabel"] {
-        color: var(--lf-muted) !important;
-        font-weight: 600 !important;
-    }
-
-    [data-testid="stMetricValue"] {
-        color: var(--lf-title) !important;
-        font-weight: 800 !important;
-    }
-
-    [data-testid="stDataFrame"] {
-        border: 1px solid #dde3f0;
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: var(--lf-shadow-sm);
-    }
-
-    /* ---------------------------------------------------------------
-       BUTTONS  (unified button system)
-       --------------------------------------------------------------- */
-    .stButton > button, [data-testid="stDownloadButton"] > button {
-        border-radius: 10px !important;
-        font-weight: 700 !important;
-        min-height: 2.6rem;
-        font-size: 0.92rem !important;
-        transition: all 0.15s ease-in-out !important;
-        border: 1px solid transparent !important;
-    }
-
-    /* Primary CTAs: Use Selected Files / Run Cleaning Pipeline / Download buttons */
-    .stButton > button[kind="primary"],
-    [data-testid="stDownloadButton"] > button[kind="primary"] {
-        background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
-        color: #ffffff !important;
-        box-shadow: var(--lf-shadow-primary) !important;
-        border: 1px solid transparent !important;
-    }
-
-    .stButton > button[kind="primary"]:hover,
-    [data-testid="stDownloadButton"] > button[kind="primary"]:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 12px 24px rgba(60, 55, 214, 0.30) !important;
-        filter: brightness(1.03);
-    }
-
-    .stButton > button[kind="primary"]:active,
-    [data-testid="stDownloadButton"] > button[kind="primary"]:active {
-        transform: translateY(0);
-    }
-
-    /* Secondary buttons (default kind): outlined, same brand color for consistency */
-    .stButton > button[kind="secondary"],
-    [data-testid="stDownloadButton"] > button[kind="secondary"] {
-        background: #ffffff !important;
-        color: var(--lf-primary) !important;
-        border: 1.5px solid var(--lf-primary) !important;
-        box-shadow: none !important;
-    }
-
-    .stButton > button[kind="secondary"]:hover,
-    [data-testid="stDownloadButton"] > button[kind="secondary"]:hover {
-        background: var(--lf-primary-soft) !important;
-        color: var(--lf-primary) !important;
-        border-color: var(--lf-primary) !important;
-    }
-
-    .stButton > button[kind="secondary"]:focus,
-    [data-testid="stDownloadButton"] > button[kind="secondary"]:focus {
-        box-shadow: 0 0 0 3px var(--lf-primary-soft) !important;
-    }
-
-    
-
-    /* "How it works" pill in the top bar — explicit box with a visible border,
-       kept compact so it doesn't compete with primary CTAs. */
-    div[data-testid="stButton"] div.st-key-how_it_works_btn button {
-        min-width: 120px !important;
-        height: 40px !important;
-        min-height: 40px !important;
-        padding: 0 16px !important;
-        border-radius: 10px !important;
-        white-space: nowrap !important;
-        background: #ffffff !important;
-        color: var(--lf-primary) !important;
-        border: 1.5px solid var(--lf-primary) !important;
-        box-shadow: var(--lf-shadow-sm) !important;
-    }
-
-    div[data-testid="stButton"] div.st-key-how_it_works_btn button:hover {
-        background: var(--lf-primary-soft) !important;
-        border-color: var(--lf-primary) !important;
-        color: var(--lf-primary) !important;
-    }
-
-    /* ---------------------------------------------------------------
-       TABS  — each tab rendered as its own bordered box, selected tab
-       clearly highlighted with a filled brand background.
-       --------------------------------------------------------------- */
-    [data-testid="stTabs"] [role="tablist"] {
-        gap: 0.5rem;
-        border-bottom: none;
-        flex-wrap: wrap;
-        padding-bottom: 0.25rem;
-    }
-
-    /* Hide Streamlit's built-in active-tab underline. */
-    [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
-        display: none !important;
-    }
-
-    [data-testid="stTabs"] [role="tab"] {
-        border: 1.5px solid var(--lf-border);
-        border-radius: 10px;
-        font-weight: 700;
-        color: var(--lf-muted);
-        padding: 0.6rem 1.1rem;
-        background: #ffffff;
-        transition: all 0.15s ease-in-out;
-    }
-
-    [data-testid="stTabs"] [role="tab"]:hover {
-        color: var(--lf-primary);
-        border-color: var(--lf-primary);
-        background: var(--lf-primary-soft);
-    }
-
-    [data-testid="stTabs"] [aria-selected="true"] {
-        color: #ffffff !important;
-        background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
-        border: 1.5px solid var(--lf-primary) !important;
-        box-shadow: var(--lf-shadow-primary);
-    }
-
-    /* ---------------------------------------------------------------
-       FORM CONTROLS (radio / checkbox / select)
-       --------------------------------------------------------------- */
-    [data-testid="stRadio"] label,
-    [data-testid="stCheckbox"] label {
-        font-weight: 600 !important;
-        color: var(--lf-body) !important;
-    }
-
-    [data-testid="stRadio"] > div {
-        gap: 0.6rem;
-    }
-
-    div[data-baseweb="radio"] > div:first-child,
-    [data-testid="stCheckbox"] span[data-baseweb="checkbox"] > div:first-child {
-        border-color: #c7cdea !important;
-    }
-
-    div[data-baseweb="radio"] input:checked + div,
-    [data-testid="stCheckbox"] input:checked + span > div:first-child {
-        background-color: var(--lf-primary) !important;
-        border-color: var(--lf-primary) !important;
-    }
-
-    [data-baseweb="select"] > div {
-        border-radius: 10px !important;
-        border-color: var(--lf-border) !important;
-    }
-
-    [data-baseweb="select"] > div:hover {
-        border-color: var(--lf-primary) !important;
-    }
-
-    /* ---------------------------------------------------------------
-       GLOBAL LOADING OVERLAY & INTERACTION BLOCKER
-       --------------------------------------------------------------- */
-    @keyframes global-spinner-spin {
-        0% { transform: translate(-50%, -50%) rotate(0deg); }
-        100% { transform: translate(-50%, -50%) rotate(360deg); }
-    }
-
-    [data-testid="stApp"][data-test-script-state="running"]::before {
-        content: "";
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
-        background: rgba(15, 23, 42, 0.45);
-        backdrop-filter: blur(4px);
-        -webkit-backdrop-filter: blur(4px);
-        z-index: 999990;
-        pointer-events: all !important;
-        cursor: wait !important;
-    }
-
-    [data-testid="stApp"][data-test-script-state="running"]::after {
-        content: "";
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        width: 58px;
-        height: 58px;
-        border: 4px solid rgba(255, 255, 255, 0.2);
-        border-top: 4px solid var(--lf-primary);
-        border-right: 4px solid var(--lf-primary-2);
-        border-radius: 50%;
-        z-index: 999999;
-        animation: global-spinner-spin 0.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-        pointer-events: none !important;
-        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
-    }
-
-    [data-testid="stApp"][data-test-script-state="running"] button,
-    [data-testid="stApp"][data-test-script-state="running"] input,
-    [data-testid="stApp"][data-test-script-state="running"] select,
-    [data-testid="stApp"][data-test-script-state="running"] [role="button"],
-    [data-testid="stApp"][data-test-script-state="running"] [data-testid="stFileUploader"],
-    [data-testid="stApp"][data-test-script-state="running"] [data-testid="stCheckbox"],
-    [data-testid="stApp"][data-test-script-state="running"] [data-baseweb="select"] {
-        pointer-events: none !important;
-        cursor: wait !important;
-    }
-
-    [data-stale="true"] {
-        pointer-events: none !important;
-        opacity: 0.7;
-        transition: opacity 0.2s ease-in-out;
-    }
-
-    [data-testid="stSpinner"] {
-        padding: 0.65rem 1rem;
-        background: #F8FAFC;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        font-weight: 500;
-        color: #1E293B;
-    }
-
-    @media (max-width: 900px) {
-        .lf-topbar {
-            flex-direction: column;
-            align-items: flex-start;
-        }
-        .lf-section-head h2 {
-            font-size: 1.4rem;
-        }
-        [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
-            padding-top: 4.75rem;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 FIELD_HELP = {
     "Full Name": "If your file has one combined name column instead of separate First/Last, map it here — it will be auto-split.",
@@ -1203,8 +619,8 @@ def get_email_series(df, mapping):
 # ---------------- FILE UPLOADS ----------------
 section_header("01-Upload the Files", "Upload")
 st.markdown(
-    '<div class="upload-card">📁 Drag and drop your campaign sources below, then click '
-    '<strong>&quot;Use Selected Files&quot;</strong> to continue.</div>',
+    '<div class="upload-card">📁 Drag and drop your raw lead file below, then click '
+    '<strong>&quot;Use Selected File&quot;</strong> to continue.</div>',
     unsafe_allow_html=True,
 )
 
@@ -1217,94 +633,38 @@ with st.expander("💡 Large-file upload tip", expanded=False):
         "This reduces file size by **90%** (e.g. from 150MB down to ~15MB), uploading in **under 15 seconds** with zero timeouts!"
     )
 
-for uploader_name in ["raw", "master", "bounce"]:
-    st.session_state.setdefault(f"{uploader_name}_uploader_version", 0)
+st.session_state.setdefault("raw_uploader_version", 0)
 
-col1, col2, col3 = st.columns(3)
+st.markdown(
+    '<div class="lf-upload-label">📄 Raw Lead File '
+    '<span class="lf-upload-required">Required</span></div>',
+    unsafe_allow_html=True,
+)
 
-with col1:
-    st.markdown(
-        '<div class="lf-upload-label">📄 Raw Lead File '
-        '<span class="lf-upload-required">Required</span></div>',
-        unsafe_allow_html=True,
-    )
+raw_file_selected = st.file_uploader(
+    "Drag and drop CSV/XLSX",
+    type=["csv", "xlsx", "xls", "zip", "gz"],
+    key=f"raw_{st.session_state['raw_uploader_version']}",
+    help="The messy export you want cleaned — from a scraper, CRM, or list purchase. Supports CSV, XLSX, XLS, ZIP, or GZ.",
+)
 
-    raw_file_selected = st.file_uploader(
-        "Drag and drop CSV/XLSX",
-        type=["csv", "xlsx", "xls", "zip", "gz"],
-        key=f"raw_{st.session_state['raw_uploader_version']}",
-        help="The messy export you want cleaned — from a scraper, CRM, or list purchase. Supports CSV, XLSX, XLS, ZIP, or GZ.",
-    )
+st.caption(
+    "🗄️ Master & Bounce suppression now come from your database. Pick which lists "
+    "to suppress against in **Step 03** below, and manage them on the "
+    "**Manage Suppression Database** page (left sidebar)."
+)
 
-
-with col2:
-    st.markdown(
-        '<div class="lf-upload-label">🗂️ Master Files '
-        '<span class="lf-upload-optional">Optional</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    master_files_uploaded = st.file_uploader(
-        "Exclude leads you already have",
-        type=["csv", "xlsx", "xls", "zip", "gz"],
-        accept_multiple_files=True,
-        key=f"master_{st.session_state['master_uploader_version']}",
-        help="Upload up to three past campaign contact files. Anyone whose email matches will be removed so you don't re-contact them.",
-    )
-
-    st.session_state.setdefault("excluded_master_files", set())
-
-    master_files_selected = []
-
-    for mf in (master_files_uploaded or []):
-        if mf.name in st.session_state["excluded_master_files"]:
-            continue
-
-        master_files_selected.append(mf)
-
-
-with col3:
-    st.markdown(
-        '<div class="lf-upload-label">🚫 Bounce File '
-        '<span class="lf-upload-optional">Optional</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    bounce_file_selected = st.file_uploader(
-        "Previously bounced emails",
-        type=["csv", "xlsx", "xls", "zip", "gz"],
-        key=f"bounce_{st.session_state['bounce_uploader_version']}",
-        help="Emails that have previously bounced. Any matching address will be removed to protect your sender reputation.",
-    )
-
-if st.button("📤  Use Selected Files", type="primary"):
-    selected_files = ([raw_file_selected] if raw_file_selected is not None else []) + list(master_files_selected) + (
-        [bounce_file_selected] if bounce_file_selected is not None else []
-    )
-    upload_errors = [error for file in selected_files if (error := validate_upload(file))]
-    if upload_errors:
-        for error in upload_errors:
-            st.error(error)
+if st.button("📤  Use Selected File", type="primary"):
+    upload_error = validate_upload(raw_file_selected) if raw_file_selected is not None else None
+    if upload_error:
+        st.error(upload_error)
         st.session_state["active_raw_file"] = None
-        st.session_state["active_master_files"] = []
-        st.session_state["active_bounce_file"] = None
-    elif len(master_files_selected) > 3:
-        st.error("Please select no more than 3 Master files.")
-        st.session_state["active_raw_file"] = None
-        st.session_state["active_master_files"] = []
-        st.session_state["active_bounce_file"] = None
     else:
-        st.session_state["active_master_files"] = master_files_selected
         st.session_state["active_raw_file"] = raw_file_selected
-        st.session_state["active_bounce_file"] = bounce_file_selected
 
 active_raw_file = st.session_state.get("active_raw_file")
-active_master_files = st.session_state.get("active_master_files", [])
-active_bounce_file = st.session_state.get("active_bounce_file")
-for selected_file in ([active_raw_file] if active_raw_file is not None else []) + list(active_master_files) + (
-    [active_bounce_file] if active_bounce_file is not None else []
-):
-    upload_error = validate_upload(selected_file)
+if active_raw_file is not None:
+    upload_error = validate_upload(active_raw_file)
     if upload_error:
         st.error(upload_error)
         st.stop()
@@ -1390,6 +750,61 @@ if active_raw_file is not None:
             key="split_by_industry",
             help="Groups the cleaned output by the Industry field and lets you download each industry as a separate file.",
         )
+
+    selected_master_list_ids = []
+    selected_bounce_list_ids = []
+    with st.expander("🗄️ Suppression lists (from your database)", expanded=True):
+        if not db_is_ready():
+            st.warning(
+                "Database not connected — Master/Bounce suppression will be skipped. "
+                "See the banner at the top of the page to reconnect."
+            )
+        else:
+            st.caption(
+                "Choose which stored lists to suppress against. Import or manage lists on the "
+                "**Manage Suppression Database** page (left sidebar). All lists are selected by default."
+            )
+            try:
+                master_lists_df = db.get_master_lists()
+                bounce_lists_df = db.get_bounce_lists()
+            except Exception as e:
+                master_lists_df = pd.DataFrame()
+                bounce_lists_df = pd.DataFrame()
+                st.warning(f"Could not load lists from the database: {e}")
+
+            sup_c1, sup_c2 = st.columns(2)
+            with sup_c1:
+                if master_lists_df is not None and not master_lists_df.empty:
+                    m_labels = {
+                        int(r.id): f"{r.name} ({int(r.contact_count):,})"
+                        for r in master_lists_df.itertuples()
+                    }
+                    m_options = list(m_labels.keys())
+                    selected_master_list_ids = st.multiselect(
+                        "🗂️ Master lists — remove contacts you already have",
+                        options=m_options,
+                        default=m_options,
+                        format_func=lambda i: m_labels.get(i, str(i)),
+                        key="sel_master_lists",
+                    )
+                else:
+                    st.info("No Master lists yet. Add one on the Manage Suppression Database page.")
+            with sup_c2:
+                if bounce_lists_df is not None and not bounce_lists_df.empty:
+                    b_labels = {
+                        int(r.id): f"{r.name} ({int(r.email_count):,})"
+                        for r in bounce_lists_df.itertuples()
+                    }
+                    b_options = list(b_labels.keys())
+                    selected_bounce_list_ids = st.multiselect(
+                        "🚫 Bounce lists — remove previously bounced emails",
+                        options=b_options,
+                        default=b_options,
+                        format_func=lambda i: b_labels.get(i, str(i)),
+                        key="sel_bounce_lists",
+                    )
+                else:
+                    st.info("No Bounce lists yet. Add one on the Manage Suppression Database page.")
 
     section_header("04-Process The Data Files", "Run Processing")
     st.caption("▶️ Runs the full cleaning workflow and prepares campaign-ready output.")
@@ -1499,50 +914,47 @@ if active_raw_file is not None:
             std = std.drop_duplicates(subset="__email_lower", keep="first").reset_index(drop=True)
             report.append(f"Step 5 - Removed in-file duplicates: {duplicate_count:,} duplicate rows removed")
 
-            # ---- STEP 6: Remove records already in Master File(s) ----
-            if active_master_files:
-                master_emails = set()
-                for mf in active_master_files:
-                    try:
-                        with st.spinner(f"Reading Master file {mf.name}..."):
-                            mdf = load_file(mf)
-                    except Exception as e:
-                        st.error(f"Could not read Master file '{mf.name}': {e}")
-                        st.info("Please make sure the file is a valid CSV, XLSX, XLS, or ZIP/GZ archive.")
-                        st.stop()
-                    m_mapping = auto_map_columns(mdf)
-                    m_email_col = m_mapping.get("Email")
-                    if m_email_col and m_email_col in mdf.columns:
-                        master_emails.update(mdf[m_email_col].dropna().astype(str).str.strip().str.lower().unique())
-                    del mdf
-                gc.collect()
+            # ---- STEP 6: Remove records already in selected Master list(s) ----
+            if db_is_ready() and selected_master_list_ids:
+                try:
+                    with st.spinner("Loading Master suppression emails from the database..."):
+                        master_emails = db.get_master_emails(selected_master_list_ids)
+                except Exception as e:
+                    st.error(f"Could not load Master emails from the database: {e}")
+                    st.stop()
                 before = len(std)
                 std = std[~std["__email_lower"].isin(master_emails)].reset_index(drop=True)
-                report.append(f"Step 6 - Removed emails already in Master File(s): {before - len(std):,} rows removed")
+                report.append(
+                    f"Step 6 - Removed emails already in selected Master list(s): "
+                    f"{before - len(std):,} rows removed (matched against {len(master_emails):,} master emails)"
+                )
+                del master_emails
+                gc.collect()
+            elif not db_is_ready():
+                report.append("Step 6 - Database not connected, Master suppression skipped")
             else:
-                report.append("Step 6 - No Master File uploaded, step skipped")
+                report.append("Step 6 - No Master list selected, step skipped")
 
-            # ---- STEP 7: Remove bounced emails ----
-            if active_bounce_file is not None:
+            # ---- STEP 7: Remove bounced emails (from selected Bounce list(s)) ----
+            if db_is_ready() and selected_bounce_list_ids:
                 try:
-                    with st.spinner(f"Reading Bounce file {active_bounce_file.name}..."):
-                        bdf = load_file(active_bounce_file)
+                    with st.spinner("Loading Bounce emails from the database..."):
+                        bounce_emails = db.get_bounce_emails(selected_bounce_list_ids)
                 except Exception as e:
-                    st.error(f"Could not read the Bounce file: {e}")
-                    st.info("Please make sure the file is a valid CSV, XLSX, XLS, or ZIP/GZ archive.")
+                    st.error(f"Could not load Bounce emails from the database: {e}")
                     st.stop()
-                b_mapping = auto_map_columns(bdf)
-                b_email_col = b_mapping.get("Email")
-                if b_email_col and b_email_col in bdf.columns:
-                    bounce_emails = set(bdf[b_email_col].dropna().astype(str).str.strip().str.lower().unique())
-                    before = len(std)
-                    std = std[~std["__email_lower"].isin(bounce_emails)].reset_index(drop=True)
-                    report.append(f"Step 7 - Removed bounced emails: {before - len(std):,} rows removed")
-                    del bdf, bounce_emails
-                else:
-                    report.append("Step 7 - Could not detect Email column in Bounce file, step skipped")
+                before = len(std)
+                std = std[~std["__email_lower"].isin(bounce_emails)].reset_index(drop=True)
+                report.append(
+                    f"Step 7 - Removed bounced emails: "
+                    f"{before - len(std):,} rows removed (matched against {len(bounce_emails):,} bounce emails)"
+                )
+                del bounce_emails
+                gc.collect()
+            elif not db_is_ready():
+                report.append("Step 7 - Database not connected, Bounce suppression skipped")
             else:
-                report.append("Step 7 - No Master Bounce file uploaded, step skipped")
+                report.append("Step 7 - No Bounce list selected, step skipped")
 
             std = std.drop(columns="__email_lower")
 
@@ -1852,5 +1264,129 @@ if active_raw_file is not None:
                     key="dl_email_specialchars_audit",
                     type="primary",
                 )
+
+        section_header("07-Save the Cleaned Data to a Master List", "Save to Master")
+        st.markdown(
+            '<div class="upload-card">'
+            '💾 Save freshly cleaned contacts back into a Master list — they will be '
+            'automatically suppressed on every future run. '
+            '<strong>Duplicate emails (already in any master list) are skipped automatically.</strong>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if not db_is_ready():
+            st.warning(
+                "Database not connected — reconnect it (see the banner at the top of the page) "
+                "to save these contacts to a Master list."
+            )
+        else:
+            final_df = st.session_state["cleaned_df"]
+            try:
+                existing_master = db.get_master_lists()
+                existing_names = existing_master["name"].tolist() if not existing_master.empty else []
+            except Exception as e:
+                existing_names = []
+                st.warning(f"Could not load existing Master lists: {e}")
+
+            new_list_label = "➕ Create a new list…"
+            save_choice = st.selectbox(
+                "Save into which Master list?",
+                [new_list_label] + existing_names,
+                key="save_master_choice",
+                help="Pick an existing list to add to, or create a new one.",
+            )
+            if save_choice == new_list_label:
+                target_name = st.text_input(
+                    "New Master list name",
+                    value=f"Cleaned {pd.Timestamp.now():%Y-%m-%d}",
+                    key="save_master_newname",
+                )
+            else:
+                target_name = save_choice
+
+            clean_target = (target_name or "").strip()
+
+            # --- Global dedup preview -------------------------------------------
+            # Before saving, compute how many emails are truly new vs already stored
+            # in ANY master list (not just the target list).
+            try:
+                with st.spinner("Checking for existing emails in all master lists…"):
+                    all_master_emails = db.get_all_master_emails()
+                emails_in_final = final_df["Email"].str.lower().str.strip()
+                new_mask = ~emails_in_final.isin(all_master_emails)
+                new_count = int(new_mask.sum())
+                already_count = int(len(final_df) - new_count)
+
+                dedup_col1, dedup_col2 = st.columns(2)
+                dedup_col1.metric(
+                    "✅ New contacts to save",
+                    f"{new_count:,}",
+                    help="These emails are not yet in any master list and will be added.",
+                )
+                dedup_col2.metric(
+                    "⏭️ Already in master lists",
+                    f"{already_count:,}",
+                    help="These emails already exist in at least one master list and will be skipped.",
+                )
+
+                if new_count == 0:
+                    st.info(
+                        "ℹ️ All cleaned contacts already exist in your master lists. "
+                        "Nothing new will be saved."
+                    )
+                elif already_count > 0:
+                    st.markdown(
+                        f'<div class="lf-dedup-box warn">'
+                        f'⚠️ <strong>{already_count:,}</strong> email(s) already stored across all master lists '
+                        f'— only the <strong>{new_count:,}</strong> new contacts will be added to '
+                        f'<strong>{clean_target or "—"}</strong>.'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div class="lf-dedup-box">'
+                        f'✅ All <strong>{new_count:,}</strong> contacts are new — '
+                        f'none of them exist in any master list yet.'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+            except Exception as e:
+                st.warning(f"Could not run global dedup check: {e}")
+                all_master_emails = set()
+                new_count = len(final_df)
+                new_mask = pd.Series([True] * len(final_df), index=final_df.index)
+
+            if st.button(
+                f"💾 Save {new_count:,} new contacts to Master",
+                type="primary",
+                key="save_to_master_btn",
+                disabled=(new_count == 0),
+            ):
+                if not clean_target:
+                    st.error("Please enter a name for the new Master list.")
+                else:
+                    try:
+                        # Only pass the truly new contacts (global dedup applied)
+                        new_df = final_df[new_mask].copy()
+                        with st.spinner(f"Saving {new_count:,} new contacts to '{clean_target}'…"):
+                            records = cleaned_df_to_records(new_df)
+                            list_id = db.get_or_create_master_list(clean_target)
+                            written = db.upsert_master_contacts(list_id, records)
+                        st.success(
+                            f"✅ Saved {written:,} new contacts into Master list "
+                            f"'{clean_target}'. They'll be suppressed on future runs."
+                        )
+                        st.balloons()
+                    except Exception as e:
+                        st.error(f"Could not save to the Master list: {e}")
 else:
-    st.info("Select files above, click 'Use selected files', then continue. Master File and Bounce File are optional but recommended for cleaner results.")
+    st.markdown(
+        '<div class="lf-inline-panel">'
+        '📂 <strong>Upload a raw lead file above</strong> and click '
+        '<strong>"Use Selected File"</strong> to begin. '
+        'Master and Bounce suppression are pulled from your database — '
+        'pick which lists to apply in Step 03.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
