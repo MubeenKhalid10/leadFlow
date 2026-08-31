@@ -16,6 +16,7 @@ the main page anymore.
 import pandas as pd
 import streamlit as st
 
+import Auth as auth
 import db
 import theme
 from dataio import (
@@ -32,6 +33,11 @@ st.set_page_config(
 theme.inject_theme()
 theme.inject_sidebar_title()
 
+# --- Admin-only gate ----------------------------------------------------------
+# Only users with the "admin" role (set in Supabase's public.profiles table)
+# may view or edit the Master/Bounce suppression database.
+auth.require_role("admin")
+auth.render_user_badge()
 
 st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
 theme.render_topbar(show_how=False)

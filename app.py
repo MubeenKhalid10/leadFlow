@@ -32,12 +32,24 @@ import streamlit as st
 
 import db
 import theme
+import Auth as auth
 
 st.set_page_config(
     page_title="LeadFlow — Lead Data Cleaning",
     page_icon="⚡",
     layout="wide",
 )
+
+# -- Inject theme CSS & sidebar branding first, so the login screen below
+#    (and every page) renders fully styled from the very first paint --
+theme.inject_theme()
+theme.inject_sidebar_title()
+
+# --- Authentication gate ------------------------------------------------------
+# Every page of the app requires a signed-in user. Master-database management
+# is further restricted to admins on its own page (see auth.require_role).
+auth.require_login()
+auth.render_user_badge()
 
 # --- Suppression database bootstrap ------------------------------------------
 # Master/Bounce suppression data now lives in PostgreSQL (see db.py). Create the
@@ -94,10 +106,8 @@ def cleaned_df_to_records(df):
     return records
 
 
-# -- Inject theme CSS & sidebar branding (shared with all pages) --
-theme.inject_theme()
-theme.inject_sidebar_title()
-
+# -- Top bar (theme CSS & sidebar branding are injected above, before the
+#    auth gate, so the login screen is themed too) --
 st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
 theme.render_topbar()
 st.markdown('</div>', unsafe_allow_html=True)

@@ -207,17 +207,24 @@ def inject_theme():
             background: linear-gradient(180deg, #0d0f1c 0%, #111328 40%, #0f1120 100%) !important;
             border-right: 1px solid rgba(99, 102, 241, 0.12) !important;
             box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35) !important;
+            position: relative !important;
         }
 
         [data-testid="stSidebar"] [data-testid="stSidebarContent"] {
-            padding: 0 !important;
-            display: flex !important;
-            flex-direction: column !important;
-        }
+    padding: 0 0 9rem 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+    position: relative !important;
+    box-sizing: border-box !important;
+}
+
         /* Move the built-in navigation down so our custom title is above it */
         [data-testid="stSidebarNav"] {
-            order: 2 !important;
-        }
+    order: 2 !important;
+    margin-bottom: 1rem !important;
+    padding-bottom: 1rem !important;
+}
         [data-testid="stSidebarContent"] > div:not([data-testid="stSidebarNav"]) {
             order: 1 !important;
         }
@@ -342,6 +349,93 @@ def inject_theme():
             background: rgba(99, 102, 241, 0.22) !important;
             color: #c7d2fe !important;
             border-color: rgba(99, 102, 241, 0.4) !important;
+        }
+
+        /* ---------------------------------------------------------------
+           SIDEBAR USER BADGE — PINNED TO BOTTOM
+           --------------------------------------------------------------- */
+        div.st-key-lf_sidebar_user_box {
+            position: absolute !important;
+            left: 0.75rem !important;
+            right: 0.75rem !important;
+            bottom: 1rem !important;
+            width: auto !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            z-index: 1000 !important;
+        }
+
+        .lf-sidebar-user-card {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            padding: 0.75rem 0.85rem;
+            margin-bottom: 0.6rem;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+        }
+
+        .lf-sidebar-user-avatar {
+            flex-shrink: 0;
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #4f46e5, #6366f1);
+            color: #ffffff !important;
+            font-weight: 800;
+            font-size: 0.95rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .lf-sidebar-user-info {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .lf-sidebar-user-email {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #f1f2fb !important;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .lf-sidebar-user-role {
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #a5b4fc !important;
+        }
+
+        div.st-key-lf_sidebar_user_box .stButton {
+            width: 100% !important;
+            margin: 0 !important;
+        }
+
+        div.st-key-lf_sidebar_user_box .stButton > button {
+            width: 100% !important;
+            min-height: 2.35rem !important;
+            border-radius: 9px !important;
+            font-weight: 700 !important;
+            font-size: 0.82rem !important;
+            background: rgba(255, 255, 255, 0.08) !important;
+            color: #f1f2fb !important;
+            border: 1px solid rgba(255, 255, 255, 0.18) !important;
+            box-shadow: none !important;
+        }
+
+        div.st-key-lf_sidebar_user_box .stButton > button:hover {
+            background: rgba(255, 255, 255, 0.16) !important;
+            border-color: rgba(255, 255, 255, 0.3) !important;
+            transform: none !important;
+            box-shadow: none !important;
         }
 
         /* Sidebar scrollbar */
