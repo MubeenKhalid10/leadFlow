@@ -446,6 +446,42 @@ def inject_theme():
             border-radius: 4px;
         }
 
+        /* Sidebar toggle — the ">>" expand button (shown when the sidebar is
+           closed) and the "<<" collapse button inside the sidebar header.
+           Boxed and highlighted so they are easy to spot. */
+        button[data-testid="stExpandSidebarButton"],
+        [data-testid="stSidebarCollapseButton"] button {
+            width: 2.5rem !important;
+            height: 2.5rem !important;
+            min-width: 2.5rem !important;
+            padding: 0 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%) !important;
+            border: 1px solid rgba(99, 102, 241, 0.55) !important;
+            border-radius: var(--lf-radius-sm) !important;
+            box-shadow: var(--lf-shadow-primary) !important;
+            opacity: 1 !important;
+            transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+        }
+
+        button[data-testid="stExpandSidebarButton"]:hover,
+        [data-testid="stSidebarCollapseButton"] button:hover {
+            background: linear-gradient(135deg, #4338ca 0%, #4f46e5 100%) !important;
+            transform: translateY(-1px) !important;
+            box-shadow: 0 10px 28px rgba(79, 70, 229, 0.38) !important;
+        }
+
+        button[data-testid="stExpandSidebarButton"] span,
+        button[data-testid="stExpandSidebarButton"] svg,
+        [data-testid="stSidebarCollapseButton"] button span,
+        [data-testid="stSidebarCollapseButton"] button svg {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+            font-size: 1.25rem !important;
+        }
+
         /* ---------------------------------------------------------------
            TOP BAR
            --------------------------------------------------------------- */
