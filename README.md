@@ -90,7 +90,7 @@ are created automatically on first run.
 3. Confirm the column mapping and pick which **Master** and **Bounce** lists to
    suppress against.
 4. **Run the cleaning pipeline** and review the results.
-5. **Download** the campaign-ready file (and any country/industry splits).
+5. **Download** the campaign-ready file (and any country/field splits — Industry, Job Title, Company, etc.). You can also upload another file to remove overlapping emails and download only the unique rows.
 6. Optionally **save the cleaned contacts** into a Master list so they're
    suppressed on future runs.
 

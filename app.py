@@ -25,6 +25,7 @@ import unicodedata
 import zipfile
 import gzip
 import gc
+import uuid
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -626,6 +627,36 @@ def get_email_series(df, mapping):
     return pd.Series([""] * len(df))
 
 
+# ---------------- LAZY DOWNLOAD HELPERS ----------------
+# st.download_button accepts a callable for `data`; Streamlit only invokes it when the
+# user actually clicks. Building CSV/XLSX bytes eagerly on every rerun was one of the
+# main reasons each click felt slow, so every download below goes through these.
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def csv_bytes(df):
+    """Return a zero-arg callable that serialises `df` to CSV bytes on demand."""
+    return lambda: df.to_csv(index=False).encode("utf-8")
+
+
+def make_download(df, fmt, base_name):
+    """Return (data_callable, file_name, mime) for the requested format ('csv', 'xlsx', 'zip')."""
+    if fmt == "zip":
+        def _build():
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr(f"{base_name}.csv", df.to_csv(index=False))
+            return buf.getvalue()
+        return _build, f"{base_name}.zip", "application/zip"
+    if fmt == "xlsx":
+        def _build():
+            buf = io.BytesIO()
+            df.to_excel(buf, index=False, engine="openpyxl")
+            return buf.getvalue()
+        return _build, f"{base_name}.xlsx", XLSX_MIME
+    return csv_bytes(df), f"{base_name}.csv", "text/csv"
+
+
 # ---------------- FILE UPLOADS ----------------
 section_header("01-Upload the Files", "Upload")
 st.markdown(
@@ -755,10 +786,11 @@ if active_raw_file is not None:
             help="Groups the cleaned output by detected country and lets you download each country separately. "
                  "Requires a mapped Location column.",
         )
-        split_by_industry = st.checkbox(
-            "Split output by Industry", value=False,
-            key="split_by_industry",
-            help="Groups the cleaned output by the Industry field and lets you download each industry as a separate file.",
+        split_by_field = st.checkbox(
+            "Split output by field (Industry, Job Title, Company, etc.)", value=False,
+            key="split_by_field",
+            help="Groups the cleaned output by any column you choose (Industry, Job Title, Company, ...). "
+                 "Tick the groups you want and download them combined into one file.",
         )
 
     selected_master_list_ids = []
@@ -927,16 +959,19 @@ if active_raw_file is not None:
             # ---- STEP 6: Remove records already in selected Master list(s) ----
             if db_is_ready() and selected_master_list_ids:
                 try:
-                    with st.spinner("Loading Master suppression emails from the database..."):
-                        master_emails = db.get_master_emails(selected_master_list_ids)
+                    with st.spinner("Checking emails against the selected Master list(s) in the database..."):
+                        # Server-side lookup: only the emails that match come back.
+                        master_emails = db.find_existing_master_emails(
+                            std["__email_lower"].tolist(), selected_master_list_ids
+                        )
                 except Exception as e:
-                    st.error(f"Could not load Master emails from the database: {e}")
+                    st.error(f"Could not check Master emails in the database: {e}")
                     st.stop()
                 before = len(std)
                 std = std[~std["__email_lower"].isin(master_emails)].reset_index(drop=True)
                 report.append(
                     f"Step 6 - Removed emails already in selected Master list(s): "
-                    f"{before - len(std):,} rows removed (matched against {len(master_emails):,} master emails)"
+                    f"{before - len(std):,} rows removed ({len(master_emails):,} matches found)"
                 )
                 del master_emails
                 gc.collect()
@@ -948,16 +983,18 @@ if active_raw_file is not None:
             # ---- STEP 7: Remove bounced emails (from selected Bounce list(s)) ----
             if db_is_ready() and selected_bounce_list_ids:
                 try:
-                    with st.spinner("Loading Bounce emails from the database..."):
-                        bounce_emails = db.get_bounce_emails(selected_bounce_list_ids)
+                    with st.spinner("Checking emails against the selected Bounce list(s) in the database..."):
+                        bounce_emails = db.find_existing_bounce_emails(
+                            std["__email_lower"].tolist(), selected_bounce_list_ids
+                        )
                 except Exception as e:
-                    st.error(f"Could not load Bounce emails from the database: {e}")
+                    st.error(f"Could not check Bounce emails in the database: {e}")
                     st.stop()
                 before = len(std)
                 std = std[~std["__email_lower"].isin(bounce_emails)].reset_index(drop=True)
                 report.append(
                     f"Step 7 - Removed bounced emails: "
-                    f"{before - len(std):,} rows removed (matched against {len(bounce_emails):,} bounce emails)"
+                    f"{before - len(std):,} rows removed ({len(bounce_emails):,} matches found)"
                 )
                 del bounce_emails
                 gc.collect()
@@ -1001,6 +1038,14 @@ if active_raw_file is not None:
                 country_series = pd.Series(["Unknown"] * len(std), index=std.index)
 
             st.session_state["cleaned_df"] = std
+            st.session_state["run_token"] = uuid.uuid4().hex
+            # Master lists the output was already suppressed against (Step 6). If that covers
+            # every list, the save-time dedup preview can skip its database lookup entirely.
+            st.session_state["master_suppressed_list_ids"] = (
+                sorted(int(i) for i in selected_master_list_ids) if db_is_ready() else []
+            )
+            st.session_state.pop("_dedup_preview", None)
+            st.session_state.pop("_compare_cache", None)
             st.session_state["country_series"] = country_series
             st.session_state["country_counts"] = country_series.value_counts().to_dict()
             st.session_state["report"] = report
@@ -1035,63 +1080,118 @@ if active_raw_file is not None:
         section_header("06-Download the Cleaned Data", "Download")
 
         split_by_location = st.session_state.get("split_by_location", True)
-        split_by_industry = st.session_state.get("split_by_industry", False)
+        split_by_field = st.session_state.get("split_by_field", False)
 
         tabs_to_show = ["📄 Final campaign file"]
         if split_by_location:
             tabs_to_show.append("🌍 Split by country")
-        if split_by_industry:
-            tabs_to_show.append("🏭 Split by industry")
+        if split_by_field:
+            tabs_to_show.append("🗂️ Split by field")
         tabs_to_show.append("🧾 Audit files (removed rows)")
 
         all_tabs = st.tabs(tabs_to_show)
         tab_idx = 0
         tab_main = all_tabs[tab_idx]; tab_idx += 1
         tab_country = all_tabs[tab_idx] if split_by_location else None; tab_idx += (1 if split_by_location else 0)
-        tab_industry = all_tabs[tab_idx] if split_by_industry else None; tab_idx += (1 if split_by_industry else 0)
+        tab_field = all_tabs[tab_idx] if split_by_field else None; tab_idx += (1 if split_by_field else 0)
         tab_audit = all_tabs[tab_idx]
 
         with tab_main:
             final_df = st.session_state["cleaned_df"]
             is_large_dataset = len(final_df) > 100_000
 
-            format_options = ["csv", "zip"] if is_large_dataset else ["xlsx", "csv", "zip"]
-            out_format = st.radio(
-                "Download format",
-                format_options,
-                index=0,
-                horizontal=True,
-                help="CSV is standard for campaign tools; ZIP compresses the CSV by ~90% for instant download.",
-                key="main_format",
-            )
+            # Left: download the final file. Right: upload a file to compare against and
+            # remove overlapping emails — kept side by side so the two options read as a pair.
+            main_dl_col, main_cmp_col = st.columns(2, gap="large")
 
-            if out_format == "zip":
-                zip_buf = io.BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as z:
-                    z.writestr("final_campaign_file.csv", final_df.to_csv(index=False))
-                dl_data = zip_buf.getvalue()
-                dl_name = "final_campaign_file.zip"
-                dl_mime = "application/zip"
-            elif out_format == "csv":
-                dl_data = final_df.to_csv(index=False).encode("utf-8")
-                dl_name = "final_campaign_file.csv"
-                dl_mime = "text/csv"
-            else:
-                buffer = io.BytesIO()
-                final_df.to_excel(buffer, index=False, engine="openpyxl")
-                dl_data = buffer.getvalue()
-                dl_name = "final_campaign_file.xlsx"
-                dl_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            with main_dl_col:
+                st.markdown("**⬇️ Download final campaign file**")
+                format_options = ["csv", "zip"] if is_large_dataset else ["xlsx", "csv", "zip"]
+                out_format = st.radio(
+                    "Download format",
+                    format_options,
+                    index=0,
+                    horizontal=True,
+                    help="CSV is standard for campaign tools; ZIP compresses the CSV by ~90% for instant download.",
+                    key="main_format",
+                )
 
-            st.download_button(
-                f"⬇️ Download final campaign file ({out_format.upper()})",
-                data=dl_data,
-                file_name=dl_name,
-                mime=dl_mime,
-                type="primary",
-                key="dl_main_file_btn"
-            )
-            st.caption("This file has already passed the final quality check — no duplicate or blank emails, ready to upload into your campaign tool.")
+                dl_data, dl_name, dl_mime = make_download(final_df, out_format, "final_campaign_file")
+
+                st.download_button(
+                    f"⬇️ Download final campaign file ({out_format.upper()})",
+                    data=dl_data,
+                    file_name=dl_name,
+                    mime=dl_mime,
+                    type="primary",
+                    key="dl_main_file_btn"
+                )
+                st.caption("This file has already passed the final quality check — no duplicate or blank emails, ready to upload into your campaign tool.")
+
+            with main_cmp_col:
+                st.markdown("**🔍 Compare with another file & remove duplicates**")
+                compare_file = st.file_uploader(
+                    "Upload a file to compare against",
+                    type=["csv", "xlsx", "xls", "zip", "gz"],
+                    key="compare_file_uploader",
+                    help="Matching is done by email address (case-insensitive).",
+                )
+                st.caption(
+                    "Upload a downloaded campaign to remove duplicates from this final file. "
+                )
+
+                if compare_file is not None:
+                    try:
+                        validate_upload(compare_file)
+                        compare_df = load_file(compare_file)
+                    except Exception as e:
+                        compare_df = None
+                        st.error(f"Could not read the comparison file: {e}")
+
+                    if compare_df is not None and len(compare_df.columns) > 0:
+                        compare_cols = list(compare_df.columns)
+                        auto_email_col = auto_map_columns(compare_df).get("Email")
+                        compare_email_col = auto_email_col if auto_email_col in compare_cols else compare_cols[0]
+
+                        # The overlap only changes when the results, the uploaded file, or the
+                        # detected column change — so compute it once and reuse across reruns.
+                        cmp_key = (
+                            st.session_state.get("run_token"),
+                            getattr(compare_file, "name", ""),
+                            getattr(compare_file, "size", 0),
+                            compare_email_col,
+                        )
+                        cmp_cache = st.session_state.get("_compare_cache")
+                        if not cmp_cache or cmp_cache.get("key") != cmp_key:
+                            compare_emails = (
+                                compare_df[compare_email_col].dropna().astype(str).str.strip().str.lower()
+                            )
+                            compare_emails = compare_emails[(compare_emails != "") & (compare_emails != "nan")]
+                            compare_email_set = set(compare_emails.tolist())
+                            final_emails_lower = final_df["Email"].astype(str).str.strip().str.lower()
+                            cmp_cache = {
+                                "key": cmp_key,
+                                "dup_mask": final_emails_lower.isin(compare_email_set),
+                            }
+                            st.session_state["_compare_cache"] = cmp_cache
+                        dup_mask = cmp_cache["dup_mask"]
+                        unique_df = final_df[~dup_mask].reset_index(drop=True)
+                        dup_df = final_df[dup_mask].reset_index(drop=True)
+
+                        st.metric("♻️ Duplicates found in uploaded file", f"{len(dup_df):,}")
+                        st.caption(f"Download Unique File without duplicates.")
+
+                        uniq_data, uniq_name, uniq_mime = make_download(unique_df, out_format, "final_campaign_file_unique")
+                        st.download_button(
+                            f"⬇️ Download unique file ({out_format.upper()})",
+                            data=uniq_data,
+                            file_name=uniq_name,
+                            mime=uniq_mime,
+                            type="primary",
+                            key="dl_unique_file_btn",
+                        )
+                    elif compare_df is not None:
+                        st.warning("The uploaded file has no columns to compare.")
 
         if tab_country is not None:
             with tab_country:
@@ -1119,20 +1219,23 @@ if active_raw_file is not None:
                         if selected_country:
                             cnt = country_counts.get(selected_country, 0)
                             country_df = final_df[country_series == selected_country]
-                            c_bytes = country_df.to_csv(index=False).encode("utf-8")
                             safe_name = selected_country.lower().replace('/', '_').replace(' ', '_')
                             st.download_button(
                                 f"⬇️ Download {selected_country} ({cnt:,} rows)",
-                                data=c_bytes,
+                                data=csv_bytes(country_df),
                                 file_name=f"final_campaign_file_{safe_name}.csv",
                                 mime="text/csv",
                                 type="primary",
                                 key=f"dl_single_country_{safe_name}",
                             )
 
-        if tab_industry is not None:
-            with tab_industry:
+        if tab_field is not None:
+            with tab_field:
                 final_df = st.session_state["cleaned_df"]
+                st.caption(
+                    "Split the final campaign file by any field — Industry, Job Title, Company, Location, etc. "
+                    "Tick the groups you want and download them together as one file."
+                )
 
                 # Determine the best column to split by:
                 # Priority: mapped Industry column → any non-empty column in cleaned df
@@ -1158,46 +1261,78 @@ if active_raw_file is not None:
                     default_idx = splittable_cols.index(default_split_col) if default_split_col in splittable_cols else 0
 
                     split_col_choice = st.selectbox(
-                        "Column to split by",
+                        "Field to split by",
                         splittable_cols,
                         index=default_idx,
-                        key="industry_split_col_choice",
-                        help="Choose which column to group/split the data by. Defaults to Industry if available; "
-                             "select any other column (e.g. Company) if your file stores industry data there.",
+                        key="field_split_col_choice",
+                        help="Choose which column to group the data by. Defaults to Industry if available; "
+                             "pick Job Title, Company, or any other column as needed.",
                     )
 
+                    group_series = final_df[split_col_choice].astype(str).str.strip()
+                    group_series = group_series.replace("", "Unknown").replace("nan", "Unknown")
+                    group_counts = group_series.value_counts().to_dict()
+                    ordered_groups = [k for k, v in sorted(group_counts.items(), key=lambda x: -x[1]) if v > 0]
+                    safe_col = split_col_choice.lower().replace(" ", "_")
+
                     st.caption(
-                        f"Splitting by **{split_col_choice}**. Each unique value gets its own downloadable file. "
+                        f"Splitting by **{split_col_choice}** — {len(ordered_groups):,} groups. "
                         "Blank values are grouped under 'Unknown'."
                     )
 
-                    industry_series = final_df[split_col_choice].astype(str).str.strip()
-                    industry_series = industry_series.replace("", "Unknown").replace("nan", "Unknown")
-                    industry_counts = industry_series.value_counts().to_dict()
-
-                    ind_counts_df = pd.DataFrame(
-                        [{"Group": k, "Rows": v} for k, v in sorted(industry_counts.items(), key=lambda x: -x[1])]
+                    select_all_groups = st.checkbox(
+                        "Select all groups",
+                        value=False,
+                        key=f"split_select_all_{safe_col}",
                     )
-                    st.dataframe(ind_counts_df, width="stretch", hide_index=True)
 
-                    ind_col_sel, ind_col_dl = st.columns([2, 1])
-                    available_industries = [k for k, v in sorted(industry_counts.items(), key=lambda x: -x[1]) if v > 0]
-                    with ind_col_sel:
-                        selected_industry = st.selectbox("Select group to download", available_industries, key="selected_industry_dl")
-                    with ind_col_dl:
-                        if selected_industry:
-                            ind_cnt = industry_counts.get(selected_industry, 0)
-                            industry_df = final_df[industry_series == selected_industry]
-                            ind_bytes = industry_df.to_csv(index=False).encode("utf-8")
-                            safe_ind = selected_industry.lower().replace('/', '_').replace(' ', '_').replace('&', 'and')
-                            safe_col = split_col_choice.lower().replace(' ', '_')
+                    groups_table = pd.DataFrame(
+                        [{"Select": select_all_groups, "Group": k, "Rows": group_counts[k]} for k in ordered_groups]
+                    )
+                    # Key includes the column and select-all state so the editor resets when either changes.
+                    edited_groups = st.data_editor(
+                        groups_table,
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn("Select", default=False),
+                            "Group": st.column_config.TextColumn("Group"),
+                            "Rows": st.column_config.NumberColumn("Rows", format="%d"),
+                        },
+                        disabled=["Group", "Rows"],
+                        hide_index=True,
+                        width="stretch",
+                        key=f"split_group_editor_{safe_col}_{int(select_all_groups)}",
+                    )
+
+                    selected_groups = edited_groups.loc[edited_groups["Select"].fillna(False).astype(bool), "Group"].tolist()
+
+                    if not selected_groups:
+                        st.info("Tick one or more groups above to build a combined download.")
+                    else:
+                        combined_mask = group_series.isin(selected_groups)
+                        combined_rows = int(combined_mask.sum())
+                        group_order = {g: i for i, g in enumerate(ordered_groups)}
+
+                        def _build_combined(mask=combined_mask, order=group_order, src=final_df, gs=group_series):
+                            # Keep rows of the same group together, in the order the groups are listed.
+                            # Runs only when the download button is clicked.
+                            df = src[mask].assign(__grp_order=gs[mask].map(order))
+                            df = df.sort_values("__grp_order", kind="stable").drop(columns="__grp_order")
+                            return df.to_csv(index=False).encode("utf-8")
+
+                        sel_col1, sel_col2 = st.columns([2, 1])
+                        with sel_col1:
+                            st.write(
+                                f"**{len(selected_groups):,} group(s) selected** → **{combined_rows:,} rows** "
+                                f"({', '.join(selected_groups[:5])}{'…' if len(selected_groups) > 5 else ''})"
+                            )
+                        with sel_col2:
                             st.download_button(
-                                f"⬇️ Download {selected_industry} ({ind_cnt:,} rows)",
-                                data=ind_bytes,
-                                file_name=f"split_{safe_col}_{safe_ind}.csv",
+                                f"⬇️ Download selected ({combined_rows:,} rows)",
+                                data=_build_combined,
+                                file_name=f"split_{safe_col}_selected_groups.csv",
                                 mime="text/csv",
                                 type="primary",
-                                key=f"dl_single_industry_{safe_ind}",
+                                key=f"dl_combined_split_{safe_col}",
                             )
 
         with tab_audit:
@@ -1209,7 +1344,7 @@ if active_raw_file is not None:
                 st.dataframe(removed_indian_df.head(20), width="stretch")
                 st.download_button(
                     "⬇️ Download removed Indian contacts (full list)",
-                    data=removed_indian_df.to_csv(index=False).encode("utf-8"),
+                    data=csv_bytes(removed_indian_df),
                     file_name="removed_indian_contacts.csv",
                     mime="text/csv",
                     key="dl_indian_audit",
@@ -1225,7 +1360,7 @@ if active_raw_file is not None:
                 st.dataframe(special_chars_df.head(20), width="stretch")
                 st.download_button(
                     "⬇️ Download uncleaned special-characters file (full list)",
-                    data=special_chars_df.to_csv(index=False).encode("utf-8"),
+                    data=csv_bytes(special_chars_df),
                     file_name="special_characters_separated_uncleaned.csv",
                     mime="text/csv",
                     key="dl_specialchars_audit",
@@ -1252,7 +1387,7 @@ if active_raw_file is not None:
                 st.dataframe(special_chars_cleaned_df.head(20), width="stretch")
                 st.download_button(
                     "⬇️ Download cleaned special-characters file (full list)",
-                    data=special_chars_cleaned_df.to_csv(index=False).encode("utf-8"),
+                    data=csv_bytes(special_chars_cleaned_df),
                     file_name="special_characters_separated_cleaned.csv",
                     mime="text/csv",
                     key="dl_specialchars_cleaned_audit",
@@ -1268,7 +1403,7 @@ if active_raw_file is not None:
                 st.dataframe(email_special_df.head(20), width="stretch")
                 st.download_button(
                     "⬇️ Download email-special-characters file (full list)",
-                    data=email_special_df.to_csv(index=False).encode("utf-8"),
+                    data=csv_bytes(email_special_df),
                     file_name="email_special_characters_separated.csv",
                     mime="text/csv",
                     key="dl_email_specialchars_audit",
@@ -1295,6 +1430,7 @@ if active_raw_file is not None:
                 existing_master = db.get_master_lists()
                 existing_names = existing_master["name"].tolist() if not existing_master.empty else []
             except Exception as e:
+                existing_master = pd.DataFrame()
                 existing_names = []
                 st.warning(f"Could not load existing Master lists: {e}")
 
@@ -1320,10 +1456,24 @@ if active_raw_file is not None:
             # Before saving, compute how many emails are truly new vs already stored
             # in ANY master list (not just the target list).
             try:
-                with st.spinner("Checking for existing emails in all master lists…"):
-                    all_master_emails = db.get_all_master_emails()
-                emails_in_final = final_df["Email"].str.lower().str.strip()
-                new_mask = ~emails_in_final.isin(all_master_emails)
+                # Only recompute when the cleaned results change (new run) or after a save.
+                # The lookup runs server-side so only matching emails are transferred.
+                _dedup_key = st.session_state.get("run_token")
+                _dedup_cache = st.session_state.get("_dedup_preview")
+                if not _dedup_cache or _dedup_cache.get("key") != _dedup_key:
+                    emails_in_final = final_df["Email"].astype(str).str.lower().str.strip()
+                    _all_list_ids = set(int(i) for i in existing_master["id"].tolist()) if not existing_master.empty else set()
+                    _suppressed_ids = st.session_state.get("master_suppressed_list_ids")
+                    if _suppressed_ids is not None and _all_list_ids and _all_list_ids <= set(_suppressed_ids):
+                        # Step 6 already removed every email present in any master list — nothing to look up.
+                        new_mask = pd.Series(True, index=final_df.index)
+                    else:
+                        with st.spinner("Checking for existing emails in all master lists…"):
+                            existing_emails = db.find_existing_master_emails(emails_in_final.tolist())
+                        new_mask = ~emails_in_final.isin(existing_emails)
+                    _dedup_cache = {"key": _dedup_key, "new_mask": new_mask}
+                    st.session_state["_dedup_preview"] = _dedup_cache
+                new_mask = _dedup_cache["new_mask"]
                 new_count = int(new_mask.sum())
                 already_count = int(len(final_df) - new_count)
 
@@ -1363,7 +1513,6 @@ if active_raw_file is not None:
                     )
             except Exception as e:
                 st.warning(f"Could not run global dedup check: {e}")
-                all_master_emails = set()
                 new_count = len(final_df)
                 new_mask = pd.Series([True] * len(final_df), index=final_df.index)
 
@@ -1383,6 +1532,10 @@ if active_raw_file is not None:
                             records = cleaned_df_to_records(new_df)
                             list_id = db.get_or_create_master_list(clean_target)
                             written = db.upsert_master_contacts(list_id, records)
+                        # Master data changed: refresh the dedup preview on the next rerun,
+                        # and stop trusting the "already suppressed against all lists" shortcut.
+                        st.session_state.pop("_dedup_preview", None)
+                        st.session_state.pop("master_suppressed_list_ids", None)
                         st.success(
                             f"✅ Saved {written:,} new contacts into Master list "
                             f"'{clean_target}'. They'll be suppressed on future runs."

@@ -32,17 +32,37 @@ stack trace.
 
 from __future__ import annotations
 
+import functools
+import io
 import os
+import threading
+import time
 from contextlib import contextmanager
 
 import pandas as pd
 import psycopg2
+from psycopg2 import pool as _pgpool
 from psycopg2.extras import execute_values
 
 try:  # Streamlit is available in the app, but keep db.py importable without it.
     import streamlit as st
 except Exception:  # pragma: no cover
     st = None
+
+
+def _cached(ttl: int, resource: bool = False):
+    """Cache a read-only query across reruns (and sessions) when Streamlit is present.
+
+    `resource=True` uses st.cache_resource so large sets are shared by reference
+    instead of being pickled/copied on every call. Every write function below
+    clears these caches via invalidate_caches().
+    """
+    def deco(fn):
+        if st is None:
+            return fn
+        cacher = st.cache_resource if resource else st.cache_data
+        return cacher(ttl=ttl, show_spinner=False)(fn)
+    return deco
 
 
 DEFAULT_CONFIG = {
@@ -92,14 +112,9 @@ def get_config() -> dict:
     return cfg
 
 
-@contextmanager
-def get_conn(dbname: str | None = None, autocommit: bool = False):
-    """Yield a psycopg2 connection, committing on success and always closing.
-
-    Pass dbname to connect to a specific database (used by ensure_database()).
-    """
+def _conn_kwargs(dbname: str | None = None) -> dict:
     cfg = get_config()
-    conn_kwargs = dict(
+    kwargs = dict(
         host=cfg["host"],
         port=cfg["port"],
         dbname=dbname or cfg["dbname"],
@@ -108,19 +123,110 @@ def get_conn(dbname: str | None = None, autocommit: bool = False):
         connect_timeout=5,
     )
     if cfg.get("sslmode"):
-        conn_kwargs["sslmode"] = cfg["sslmode"]
-    conn = psycopg2.connect(**conn_kwargs)
-    conn.autocommit = autocommit
+        kwargs["sslmode"] = cfg["sslmode"]
+    return kwargs
+
+
+# Process-wide connection pool. Opening a fresh TLS connection to a cloud
+# Postgres costs several hundred ms; Streamlit reruns the whole script on every
+# click, so without a pool each rerun paid that cost several times over.
+_POOL_LOCK = threading.Lock()
+_POOL: _pgpool.ThreadedConnectionPool | None = None
+_POOL_KEY: tuple | None = None
+_LAST_USED: dict[int, float] = {}
+_IDLE_PROBE_SECONDS = 60  # probe connections idle longer than this before reuse
+_POOL_MAX = 8
+
+
+def _get_pool() -> _pgpool.ThreadedConnectionPool:
+    global _POOL, _POOL_KEY
+    kwargs = _conn_kwargs()
+    key = tuple(sorted(kwargs.items()))
+    with _POOL_LOCK:
+        if _POOL is None or _POOL.closed or _POOL_KEY != key:
+            if _POOL is not None and not _POOL.closed:
+                try:
+                    _POOL.closeall()
+                except Exception:
+                    pass
+            _POOL = _pgpool.ThreadedConnectionPool(1, _POOL_MAX, **kwargs)
+            _POOL_KEY = key
+            _LAST_USED.clear()
+        return _POOL
+
+
+def _checkout() -> tuple[_pgpool.ThreadedConnectionPool, psycopg2.extensions.connection]:
+    """Get a live connection from the pool, replacing any that went stale."""
+    pool_ = _get_pool()
+    for _ in range(_POOL_MAX + 1):
+        conn = pool_.getconn()
+        if conn.closed:
+            pool_.putconn(conn, close=True)
+            continue
+        idle_for = time.time() - _LAST_USED.get(id(conn), 0.0)
+        if idle_for > _IDLE_PROBE_SECONDS:
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.fetchone()
+                conn.rollback()
+            except Exception:
+                pool_.putconn(conn, close=True)
+                continue
+        return pool_, conn
+    # Pool only handed us dead connections; open a fresh one directly.
+    return pool_, pool_.getconn()
+
+
+@contextmanager
+def get_conn(dbname: str | None = None, autocommit: bool = False):
+    """Yield a psycopg2 connection, committing on success.
+
+    Connections to the configured database come from a shared pool and are
+    returned to it afterwards. Pass dbname to open a one-off connection to a
+    specific database (used by ensure_database()).
+    """
+    if dbname:
+        conn = psycopg2.connect(**_conn_kwargs(dbname))
+        conn.autocommit = autocommit
+        try:
+            yield conn
+            if not autocommit:
+                conn.commit()
+        except Exception:
+            if not autocommit:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return
+
+    pool_, conn = _checkout()
+    broken = False
     try:
+        conn.autocommit = autocommit
         yield conn
         if not autocommit:
             conn.commit()
-    except Exception:
-        if not autocommit:
-            conn.rollback()
+    except Exception as exc:
+        broken = bool(conn.closed) or isinstance(exc, (psycopg2.OperationalError, psycopg2.InterfaceError))
+        if not autocommit and not broken:
+            try:
+                conn.rollback()
+            except Exception:
+                broken = True
         raise
     finally:
-        conn.close()
+        if not broken:
+            try:
+                conn.autocommit = False
+            except Exception:
+                broken = True
+        _LAST_USED[id(conn)] = time.time()
+        try:
+            pool_.putconn(conn, close=broken)
+        except Exception:
+            pass
 
 
 def _fetch_df(query: str, params=None) -> pd.DataFrame:
@@ -257,6 +363,7 @@ def _clean_field(value):
 # --------------------------------------------------------------------------- #
 # Master lists
 # --------------------------------------------------------------------------- #
+@_cached(ttl=600)
 def get_master_lists() -> pd.DataFrame:
     """Return all master lists with contact counts, newest first.
 
@@ -346,6 +453,7 @@ def upsert_master_contacts(list_id: int, records: list[dict]) -> int:
     return len(rows)
 
 
+@_cached(ttl=600, resource=True)
 def get_master_emails(list_ids: list[int]) -> set:
     """Return the set of normalised emails across the given master lists."""
     if not list_ids:
@@ -354,11 +462,12 @@ def get_master_emails(list_ids: list[int]) -> set:
         cur = conn.cursor()
         cur.execute(
             "SELECT email FROM master_contacts WHERE list_id = ANY(%s)",
-            (list(list_ids),),
+            (sorted(set(list_ids)),),
         )
         return {r[0] for r in cur.fetchall()}
 
 
+@_cached(ttl=600, resource=True)
 def get_all_master_emails() -> set:
     """Return ALL normalised emails across ALL master lists (for global dedup).
 
@@ -371,6 +480,67 @@ def get_all_master_emails() -> set:
         return {r[0] for r in cur.fetchall()}
 
 
+def _copy_escape(value: str) -> str:
+    """Escape a value for PostgreSQL COPY text format."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
+def _find_existing(table: str, emails, list_ids=None) -> set:
+    """Return the subset of `emails` that already exist in `table` (optionally only in `list_ids`).
+
+    The emails are streamed into a temporary table with COPY (the fastest way to
+    get a large list into Postgres) and joined server-side against the indexed
+    email column, so only the matches travel back over the wire. Downloading every
+    stored email and comparing locally took ~40 s for 800k rows; this takes a few
+    seconds for 100k probe emails.
+    """
+    seen = set()
+    cleaned = []
+    for e in emails:
+        n = normalize_email(e)
+        if n and n not in seen:
+            seen.add(n)
+            cleaned.append(n)
+    if not cleaned:
+        return set()
+
+    ids = sorted({int(i) for i in list_ids}) if list_ids else None
+    with get_conn() as conn:
+        cur = conn.cursor()
+        # ON COMMIT DROP: the table lives only for this transaction (get_conn commits on exit).
+        cur.execute("CREATE TEMP TABLE _lf_probe (email TEXT) ON COMMIT DROP")
+        buf = io.StringIO("".join(_copy_escape(e) + "\n" for e in cleaned))
+        cur.copy_expert("COPY _lf_probe (email) FROM STDIN", buf)
+        cur.execute("ANALYZE _lf_probe")
+        if ids is None:
+            cur.execute(
+                f"SELECT DISTINCT m.email FROM _lf_probe u JOIN {table} m ON m.email = u.email"
+            )
+        else:
+            cur.execute(
+                f"SELECT DISTINCT m.email FROM _lf_probe u JOIN {table} m ON m.email = u.email "
+                f"WHERE m.list_id = ANY(%s)",
+                (ids,),
+            )
+        return {r[0] for r in cur.fetchall()}
+
+
+def find_existing_master_emails(emails, list_ids=None) -> set:
+    """Which of `emails` are already stored in master_contacts (all lists, or just `list_ids`)."""
+    return _find_existing("master_contacts", emails, list_ids)
+
+
+def find_existing_bounce_emails(emails, list_ids=None) -> set:
+    """Which of `emails` are present in bounce_emails (all lists, or just `list_ids`)."""
+    return _find_existing("bounce_emails", emails, list_ids)
+
+
+@_cached(ttl=600)
 def get_global_master_stats() -> dict:
     """Return total unique emails and total lists across all master data.
 
@@ -435,6 +605,7 @@ def rename_master_list(list_id: int, new_name: str) -> None:
 # --------------------------------------------------------------------------- #
 # Bounce lists
 # --------------------------------------------------------------------------- #
+@_cached(ttl=600)
 def get_bounce_lists() -> pd.DataFrame:
     """Return all bounce lists with email counts, newest first.
 
@@ -496,6 +667,7 @@ def upsert_bounce_emails(list_id: int, emails) -> int:
     return len(rows)
 
 
+@_cached(ttl=600, resource=True)
 def get_bounce_emails(list_ids: list[int]) -> set:
     if not list_ids:
         return set()
@@ -533,3 +705,48 @@ def rename_bounce_list(list_id: int, new_name: str) -> None:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE bounce_lists SET name = %s WHERE id = %s", (clean, list_id))
+
+
+# --------------------------------------------------------------------------- #
+# Cache invalidation
+# --------------------------------------------------------------------------- #
+_CACHED_READERS = (
+    get_master_lists,
+    get_bounce_lists,
+    get_master_emails,
+    get_all_master_emails,
+    get_bounce_emails,
+    get_global_master_stats,
+)
+
+
+def invalidate_caches() -> None:
+    """Drop every cached read so the next call sees fresh data. Cheap; safe to call often."""
+    for fn in _CACHED_READERS:
+        clear = getattr(fn, "clear", None)
+        if clear is not None:
+            try:
+                clear()
+            except Exception:
+                pass
+
+
+def _invalidating(fn):
+    """Wrap a write function so the read caches are cleared after it runs."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            invalidate_caches()
+    return wrapper
+
+
+get_or_create_master_list = _invalidating(get_or_create_master_list)
+upsert_master_contacts = _invalidating(upsert_master_contacts)
+delete_master_list = _invalidating(delete_master_list)
+rename_master_list = _invalidating(rename_master_list)
+get_or_create_bounce_list = _invalidating(get_or_create_bounce_list)
+upsert_bounce_emails = _invalidating(upsert_bounce_emails)
+delete_bounce_list = _invalidating(delete_bounce_list)
+rename_bounce_list = _invalidating(rename_bounce_list)
