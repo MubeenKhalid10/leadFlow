@@ -1,0 +1,44 @@
+{
+  "family": "leadflow",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "2048",
+  "memory": "8192",
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/leadflow-ecs-execution",
+  "containerDefinitions": [
+    {
+      "name": "leadflow",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/leadflow:<IMAGE_TAG>",
+      "essential": true,
+      "portMappings": [{ "containerPort": 8501, "protocol": "tcp" }],
+      "secrets": [
+        { "name": "SUPABASE_URL",        "valueFrom": "<SECRET_ARN>:SUPABASE_URL::" },
+        { "name": "SUPABASE_KEY",        "valueFrom": "<SECRET_ARN>:SUPABASE_KEY::" },
+        { "name": "PG_HOST",             "valueFrom": "<SECRET_ARN>:PG_HOST::" },
+        { "name": "PG_PORT",             "valueFrom": "<SECRET_ARN>:PG_PORT::" },
+        { "name": "PG_DATABASE",         "valueFrom": "<SECRET_ARN>:PG_DATABASE::" },
+        { "name": "PG_USER",             "valueFrom": "<SECRET_ARN>:PG_USER::" },
+        { "name": "PG_PASSWORD",         "valueFrom": "<SECRET_ARN>:PG_PASSWORD::" },
+        { "name": "PGSSLMODE",           "valueFrom": "<SECRET_ARN>:PGSSLMODE::" },
+        { "name": "PG_STORAGE_QUOTA_MB", "valueFrom": "<SECRET_ARN>:PG_STORAGE_QUOTA_MB::" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4).read() == b'ok' else 1)\""],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/leadflow",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "app"
+        }
+      },
+      "stopTimeout": 30
+    }
+  ]
+}

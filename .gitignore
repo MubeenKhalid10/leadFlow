@@ -11,3 +11,28 @@ __pycache__/
 
 # Streamlit secrets (contains DB credentials) — never commit
 .streamlit/secrets.toml
+
+# Environment files for Docker / AWS (contain credentials) — never commit
+.env
+.env.*
+!.env.example
+
+# Database dumps / backups — may contain production data
+*.dump
+*.backup
+*.sql.gz
+*.bak
+dumps/
+backups/
+
+# Keys, certificates and cloud credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*credentials*
+.aws/
+
+# AWS Secrets Manager payloads built locally — delete after upload
+*.secret.json

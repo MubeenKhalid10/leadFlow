@@ -14,6 +14,9 @@ master_contacts   (id, list_id -> master_lists, email, first_name, last_name,
                    company, job_title, industry, location, created_at)
 bounce_lists      (id, name, created_at)
 bounce_emails     (id, list_id -> bounce_lists, email, created_at)
+mql_lists / mql_emails, unsub_lists / unsub_emails   (same shape as bounce)
+upload_history    (category, list_name, file_name, file_size_bytes, rows_in_file,
+                   rows_written, rows_skipped, uploaded_by, uploaded_at)
 
 Emails are always stored normalised (trimmed + lower-cased) so suppression and
 de-duplication are reliable. Each list de-dupes on (list_id, email).
@@ -22,8 +25,9 @@ Configuration
 -------------
 Connection settings are read in this priority order:
     1. st.secrets["postgres"]   (see .streamlit/secrets.toml)
-    2. Environment variables     (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD)
-    3. Local defaults            (localhost:5432, db "leadflow", user "postgres")
+    2. Environment variables     (PG_HOST/PGHOST, PG_PORT/PGPORT, PG_DATABASE/PGDATABASE,
+                                  PG_USER/PGUSER, PG_PASSWORD/PGPASSWORD, PG_SSLMODE/PGSSLMODE)
+    3. Local defaults            (localhost:5432, db "leadflow", user "postgres" — dev only)
 
 Nothing here raises on import — connection problems surface through
 check_connection() so the UI can show a friendly setup message instead of a
@@ -77,13 +81,16 @@ DEFAULT_CONFIG = {
 # Maintenance database used only to CREATE DATABASE if the target is missing.
 _MAINTENANCE_DB = "postgres"
 
+# Two spellings are accepted for each setting: the libpq names (PGHOST, ...)
+# and the underscore names used by the Docker/AWS deployment (PG_HOST, ...).
+# The first one found wins.
 _ENV_MAP = {
-    "host": "PGHOST",
-    "port": "PGPORT",
-    "dbname": "PGDATABASE",
-    "user": "PGUSER",
-    "password": "PGPASSWORD",
-    "sslmode": "PGSSLMODE",
+    "host": ("PG_HOST", "PGHOST"),
+    "port": ("PG_PORT", "PGPORT"),
+    "dbname": ("PG_DATABASE", "PGDATABASE"),
+    "user": ("PG_USER", "PGUSER"),
+    "password": ("PG_PASSWORD", "PGPASSWORD"),
+    "sslmode": ("PG_SSLMODE", "PGSSLMODE"),
 }
 
 
@@ -104,10 +111,12 @@ def get_config() -> dict:
                     cfg[key] = str(section[key])
 
     # 2) Environment variables override secrets when present.
-    for key, env_name in _ENV_MAP.items():
-        val = os.environ.get(env_name)
-        if val is not None and val.strip() != "":
-            cfg[key] = val
+    for key, env_names in _ENV_MAP.items():
+        for env_name in env_names:
+            val = os.environ.get(env_name)
+            if val is not None and val.strip() != "":
+                cfg[key] = val
+                break
 
     return cfg
 
@@ -278,7 +287,66 @@ CREATE TABLE IF NOT EXISTS bounce_emails (
     UNIQUE (list_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_bounce_emails_email ON bounce_emails (email);
+
+CREATE TABLE IF NOT EXISTS mql_lists (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT UNIQUE NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS mql_emails (
+    id          BIGSERIAL PRIMARY KEY,
+    list_id     INTEGER NOT NULL REFERENCES mql_lists(id) ON DELETE CASCADE,
+    email       TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (list_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_mql_emails_email ON mql_emails (email);
+
+CREATE TABLE IF NOT EXISTS unsub_lists (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT UNIQUE NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS unsub_emails (
+    id          BIGSERIAL PRIMARY KEY,
+    list_id     INTEGER NOT NULL REFERENCES unsub_lists(id) ON DELETE CASCADE,
+    email       TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (list_id, email)
+);
+CREATE INDEX IF NOT EXISTS idx_unsub_emails_email ON unsub_emails (email);
+
+CREATE TABLE IF NOT EXISTS upload_history (
+    id              BIGSERIAL PRIMARY KEY,
+    category        TEXT NOT NULL,
+    list_name       TEXT,
+    file_name       TEXT NOT NULL,
+    file_size_bytes BIGINT,
+    rows_in_file    INTEGER,
+    rows_written    INTEGER,
+    rows_skipped    INTEGER,
+    uploaded_by     TEXT,
+    uploaded_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_upload_history_category ON upload_history (category, uploaded_at DESC);
 """
+
+# Email-only suppression categories share one schema (<cat>_lists / <cat>_emails).
+EMAIL_CATEGORIES = {
+    "bounce": ("bounce_lists", "bounce_emails"),
+    "mql": ("mql_lists", "mql_emails"),
+    "unsub": ("unsub_lists", "unsub_emails"),
+}
+ALL_CATEGORIES = ("master", "mql", "bounce", "unsub")
+
+
+def _tables(category: str) -> tuple[str, str]:
+    try:
+        return EMAIL_CATEGORIES[category]
+    except KeyError:
+        raise ValueError(f"Unknown email category: {category!r}")
 
 
 def ensure_database() -> tuple[bool, str | None]:
@@ -535,11 +603,6 @@ def find_existing_master_emails(emails, list_ids=None) -> set:
     return _find_existing("master_contacts", emails, list_ids)
 
 
-def find_existing_bounce_emails(emails, list_ids=None) -> set:
-    """Which of `emails` are present in bounce_emails (all lists, or just `list_ids`)."""
-    return _find_existing("bounce_emails", emails, list_ids)
-
-
 @_cached(ttl=600)
 def get_global_master_stats() -> dict:
     """Return total unique emails and total lists across all master data.
@@ -603,48 +666,55 @@ def rename_master_list(list_id: int, new_name: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Bounce lists
+# Email-only lists (Bounce / MQL / Unsub) — one generic implementation
 # --------------------------------------------------------------------------- #
 @_cached(ttl=600)
-def get_bounce_lists() -> pd.DataFrame:
-    """Return all bounce lists with email counts, newest first.
+def get_email_lists(category: str) -> pd.DataFrame:
+    """Return all lists of an email-only category with email counts, newest first.
 
     Columns: id, name, created_at, email_count.
     """
+    lists_t, emails_t = _tables(category)
     return _fetch_df(
-        """
+        f"""
         SELECT l.id,
                l.name,
                l.created_at,
                COUNT(e.id) AS email_count
-        FROM bounce_lists l
-        LEFT JOIN bounce_emails e ON e.list_id = l.id
+        FROM {lists_t} l
+        LEFT JOIN {emails_t} e ON e.list_id = l.id
         GROUP BY l.id, l.name, l.created_at
         ORDER BY l.created_at DESC, l.name;
         """
     )
 
 
-def get_or_create_bounce_list(name: str) -> int:
+def get_or_create_email_list(category: str, name: str) -> int:
+    lists_t, _ = _tables(category)
     clean = (name or "").strip()
     if not clean:
         raise ValueError("List name cannot be empty.")
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO bounce_lists (name) VALUES (%s) "
+            f"INSERT INTO {lists_t} (name) VALUES (%s) "
             "ON CONFLICT (name) DO NOTHING RETURNING id",
             (clean,),
         )
         row = cur.fetchone()
         if row:
             return row[0]
-        cur.execute("SELECT id FROM bounce_lists WHERE name = %s", (clean,))
+        cur.execute(f"SELECT id FROM {lists_t} WHERE name = %s", (clean,))
         return cur.fetchone()[0]
 
 
-def upsert_bounce_emails(list_id: int, emails) -> int:
-    """Insert bounce emails into a list (dedupe by email). Returns rows written."""
+def upsert_emails(category: str, list_id: int, emails) -> int:
+    """Insert emails into a list (dedupe by email).
+
+    Returns the number of rows actually inserted: emails already in the list
+    are skipped by ON CONFLICT and are not counted.
+    """
+    _, emails_t = _tables(category)
     seen = set()
     rows = []
     for value in emails:
@@ -656,35 +726,44 @@ def upsert_bounce_emails(list_id: int, emails) -> int:
     if not rows:
         return 0
 
-    query = """
-        INSERT INTO bounce_emails (list_id, email)
+    query = f"""
+        INSERT INTO {emails_t} (list_id, email)
         VALUES %s
-        ON CONFLICT (list_id, email) DO NOTHING;
+        ON CONFLICT (list_id, email) DO NOTHING
+        RETURNING 1;
     """
     with get_conn() as conn:
         cur = conn.cursor()
-        execute_values(cur, query, rows, template="(%s,%s)", page_size=10000)
-    return len(rows)
+        inserted = execute_values(cur, query, rows, template="(%s,%s)", page_size=10000, fetch=True)
+    return len(inserted)
 
 
 @_cached(ttl=600, resource=True)
-def get_bounce_emails(list_ids: list[int]) -> set:
+def get_category_emails(category: str, list_ids: list[int]) -> set:
+    _, emails_t = _tables(category)
     if not list_ids:
         return set()
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT email FROM bounce_emails WHERE list_id = ANY(%s)",
+            f"SELECT email FROM {emails_t} WHERE list_id = ANY(%s)",
             (list(list_ids),),
         )
         return {r[0] for r in cur.fetchall()}
 
 
-def get_bounce_emails_df(list_ids: list[int], limit: int | None = None) -> pd.DataFrame:
-    """Return bounce emails for the given lists as a DataFrame (for preview)."""
+def find_existing_emails(category: str, emails, list_ids=None) -> set:
+    """Which of `emails` are present in the category's email table (all lists, or just `list_ids`)."""
+    _, emails_t = _tables(category)
+    return _find_existing(emails_t, emails, list_ids)
+
+
+def get_emails_df(category: str, list_ids: list[int], limit: int | None = None) -> pd.DataFrame:
+    """Return emails for the given lists as a DataFrame (for preview)."""
+    _, emails_t = _tables(category)
     if not list_ids:
         return pd.DataFrame(columns=["email"])
-    query = "SELECT email FROM bounce_emails WHERE list_id = ANY(%s) ORDER BY email"
+    query = f"SELECT email FROM {emails_t} WHERE list_id = ANY(%s) ORDER BY email"
     params: list = [list(list_ids)]
     if limit is not None:
         query += " LIMIT %s"
@@ -692,19 +771,172 @@ def get_bounce_emails_df(list_ids: list[int], limit: int | None = None) -> pd.Da
     return _fetch_df(query + ";", tuple(params))
 
 
-def delete_bounce_list(list_id: int) -> None:
+def delete_email_list(category: str, list_id: int) -> None:
+    lists_t, _ = _tables(category)
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM bounce_lists WHERE id = %s", (list_id,))
+        cur.execute(f"DELETE FROM {lists_t} WHERE id = %s", (list_id,))
 
 
-def rename_bounce_list(list_id: int, new_name: str) -> None:
+def rename_email_list(category: str, list_id: int, new_name: str) -> None:
+    lists_t, _ = _tables(category)
     clean = (new_name or "").strip()
     if not clean:
         raise ValueError("List name cannot be empty.")
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE bounce_lists SET name = %s WHERE id = %s", (clean, list_id))
+        cur.execute(f"UPDATE {lists_t} SET name = %s WHERE id = %s", (clean, list_id))
+
+
+# Bounce wrappers keep the original API used by app.py.
+def get_bounce_lists() -> pd.DataFrame:
+    return get_email_lists("bounce")
+
+
+def get_or_create_bounce_list(name: str) -> int:
+    return get_or_create_email_list("bounce", name)
+
+
+def upsert_bounce_emails(list_id: int, emails) -> int:
+    return upsert_emails("bounce", list_id, emails)
+
+
+def get_bounce_emails(list_ids: list[int]) -> set:
+    return get_category_emails("bounce", list_ids)
+
+
+def find_existing_bounce_emails(emails, list_ids=None) -> set:
+    return find_existing_emails("bounce", emails, list_ids)
+
+
+def get_bounce_emails_df(list_ids: list[int], limit: int | None = None) -> pd.DataFrame:
+    return get_emails_df("bounce", list_ids, limit)
+
+
+def delete_bounce_list(list_id: int) -> None:
+    delete_email_list("bounce", list_id)
+
+
+def rename_bounce_list(list_id: int, new_name: str) -> None:
+    rename_email_list("bounce", list_id, new_name)
+
+
+# --------------------------------------------------------------------------- #
+# Live counts, storage statistics and upload history
+# --------------------------------------------------------------------------- #
+@_cached(ttl=30)
+def get_category_counts() -> dict:
+    """Exact per-category record counts straight from the database.
+
+    Returns {category: {"lists": n, "rows": n, "unique": n}}. Cached for only
+    30 s and cleared by every write, so the numbers always follow the database.
+    """
+    parts = [
+        "(SELECT COUNT(*) FROM master_lists)",
+        "(SELECT COUNT(*) FROM master_contacts)",
+        "(SELECT COUNT(DISTINCT email) FROM master_contacts)",
+    ]
+    for cat in ("mql", "bounce", "unsub"):
+        lists_t, emails_t = _tables(cat)
+        parts += [
+            f"(SELECT COUNT(*) FROM {lists_t})",
+            f"(SELECT COUNT(*) FROM {emails_t})",
+            f"(SELECT COUNT(DISTINCT email) FROM {emails_t})",
+        ]
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT " + ", ".join(parts))
+        row = [int(v) for v in cur.fetchone()]
+    out = {}
+    for i, cat in enumerate(("master", "mql", "bounce", "unsub")):
+        out[cat] = {"lists": row[i * 3], "rows": row[i * 3 + 1], "unique": row[i * 3 + 2]}
+    return out
+
+
+def get_storage_quota_mb() -> int | None:
+    """Total storage the database plan allows, from secrets/env. None if not configured."""
+    val = os.environ.get("PG_STORAGE_QUOTA_MB")
+    if not val and st is not None:
+        try:
+            val = st.secrets.get("postgres", {}).get("storage_quota_mb")
+        except Exception:
+            val = None
+    try:
+        return int(float(val)) if val not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+@_cached(ttl=30)
+def get_storage_info() -> dict:
+    """Actual on-disk sizes reported by PostgreSQL (bytes) plus the Master row count."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT pg_database_size(current_database()),
+                   pg_total_relation_size('master_contacts') + pg_total_relation_size('master_lists'),
+                   pg_total_relation_size('mql_emails') + pg_total_relation_size('mql_lists'),
+                   pg_total_relation_size('bounce_emails') + pg_total_relation_size('bounce_lists'),
+                   pg_total_relation_size('unsub_emails') + pg_total_relation_size('unsub_lists'),
+                   (SELECT COUNT(*) FROM master_contacts)
+            """
+        )
+        db_bytes, master_b, mql_b, bounce_b, unsub_b, master_rows = cur.fetchone()
+    master_rows = int(master_rows)
+    per_million = int(master_b / master_rows * 1_000_000) if master_rows else None
+    quota_mb = get_storage_quota_mb()
+    return {
+        "database_bytes": int(db_bytes),
+        "master_bytes": int(master_b),
+        "mql_bytes": int(mql_b),
+        "bounce_bytes": int(bounce_b),
+        "unsub_bytes": int(unsub_b),
+        "master_rows": master_rows,
+        "bytes_per_million": per_million,
+        "quota_bytes": quota_mb * 1024 * 1024 if quota_mb else None,
+    }
+
+
+def record_upload(
+    category: str,
+    file_name: str,
+    rows_in_file: int,
+    rows_written: int,
+    rows_skipped: int = 0,
+    list_name: str | None = None,
+    file_size_bytes: int | None = None,
+    uploaded_by: str | None = None,
+) -> None:
+    """Log one file import (who/what/when) into upload_history."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO upload_history
+                (category, list_name, file_name, file_size_bytes, rows_in_file,
+                 rows_written, rows_skipped, uploaded_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (category, list_name, file_name, file_size_bytes, int(rows_in_file),
+             int(rows_written), int(rows_skipped), uploaded_by),
+        )
+
+
+@_cached(ttl=30)
+def get_upload_history(category: str | None = None, limit: int = 200) -> pd.DataFrame:
+    """Upload log, newest first. Pass a category to filter."""
+    query = (
+        "SELECT category, list_name, file_name, file_size_bytes, rows_in_file, "
+        "rows_written, rows_skipped, uploaded_by, uploaded_at FROM upload_history"
+    )
+    params: list = []
+    if category:
+        query += " WHERE category = %s"
+        params.append(category)
+    query += " ORDER BY uploaded_at DESC LIMIT %s"
+    params.append(int(limit))
+    return _fetch_df(query, tuple(params))
 
 
 # --------------------------------------------------------------------------- #
@@ -712,11 +944,14 @@ def rename_bounce_list(list_id: int, new_name: str) -> None:
 # --------------------------------------------------------------------------- #
 _CACHED_READERS = (
     get_master_lists,
-    get_bounce_lists,
+    get_email_lists,
     get_master_emails,
     get_all_master_emails,
-    get_bounce_emails,
+    get_category_emails,
     get_global_master_stats,
+    get_category_counts,
+    get_storage_info,
+    get_upload_history,
 )
 
 
@@ -746,7 +981,8 @@ get_or_create_master_list = _invalidating(get_or_create_master_list)
 upsert_master_contacts = _invalidating(upsert_master_contacts)
 delete_master_list = _invalidating(delete_master_list)
 rename_master_list = _invalidating(rename_master_list)
-get_or_create_bounce_list = _invalidating(get_or_create_bounce_list)
-upsert_bounce_emails = _invalidating(upsert_bounce_emails)
-delete_bounce_list = _invalidating(delete_bounce_list)
-rename_bounce_list = _invalidating(rename_bounce_list)
+get_or_create_email_list = _invalidating(get_or_create_email_list)
+upsert_emails = _invalidating(upsert_emails)
+delete_email_list = _invalidating(delete_email_list)
+rename_email_list = _invalidating(rename_email_list)
+record_upload = _invalidating(record_upload)
