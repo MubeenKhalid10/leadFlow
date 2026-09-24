@@ -4,7 +4,7 @@ LeadFlow — shared UI theme
 
 The visual layer (fonts, colours, section headers, top bar, sidebar branding,
 and the "How it works" dialog) lives here so every page — the main cleaning
-page and the Manage Suppression Database page — looks identical.
+page, the Database page and the Manage Users page — looks identical.
 
 Usage on each page (after st.set_page_config):
     import theme
@@ -38,21 +38,23 @@ def show_how_it_works():
         """
         ### Clean your lead data in 5 steps
 
-        **1. Upload your raw file**
-        Upload the raw lead file you want cleaned.
+        **1. Upload your raw file and choose what to compare against**
+        Upload the raw lead file you want cleaned. Right below the uploader,
+        tick which stored data to compare against: Master File, Bounce, MQL
+        and Unsub. Admins manage that data on the **🗄️ Database** page.
 
         **2. Review your data**
         Preview the uploaded data and confirm the detected column mapping.
 
-        **3. Choose suppression lists**
-        Pick which Master and Bounce lists (stored in your database) to
-        suppress against. Manage those lists on the
-        **🗄️ Manage Suppression Database** page.
+        **3. Set your options**
+        Choose the Indian-contact filtering and how the output is split
+        (by country, or by a field such as Industry).
 
         **4. Run the cleaning pipeline**
         LeadFlow removes blank emails, filters Indian contacts, separates
-        special-character records, removes duplicate emails, and applies
-        Master/Bounce suppression from the database.
+        special-character records, removes duplicate emails, and removes
+        contacts found in the Master File, Bounce, MQL and Unsub lists you
+        selected.
 
         **5. Export & update**
         Download the campaign-ready file, then optionally save the cleaned

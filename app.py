@@ -1310,27 +1310,51 @@ if active_raw_file is not None:
 
                     # Search box: type part of a value (e.g. "Software") to narrow the table.
                     # Selections are remembered across searches so you can pick from several.
+                    # The remembered set (sel_key) is the single source of truth for what is
+                    # selected; the table and "Select all shown" only change it.
+                    sel_key = f"split_selected_{safe_col}"
+                    all_key = f"split_select_all_{safe_col}"
+
+                    def _on_group_search_change(all_key=all_key):
+                        # A new search shows different groups, so untick "Select all shown"
+                        # (it only ever applied to the groups shown when it was ticked).
+                        # Remembered selections are kept.
+                        st.session_state[all_key] = False
+
                     search_col, all_col = st.columns([3, 1])
                     group_search = search_col.text_input(
                         f"🔎 Search {split_col_choice}",
                         key=f"split_group_search_{safe_col}",
                         placeholder="Type to find a value, e.g. Software, Healthcare, Finance, SaaS…",
+                        on_change=_on_group_search_change,
                     ).strip().lower()
                     visible_groups = (
                         [g for g in ordered_groups if group_search in g.lower()] if group_search else ordered_groups
                     )
+
+                    def _on_select_all_toggle(sel_key=sel_key, all_key=all_key, shown=tuple(visible_groups)):
+                        # The checkbox is authoritative when toggled: ticking selects every
+                        # shown group, unticking clears every shown group. Groups hidden by
+                        # the current search keep their state.
+                        current = set(st.session_state.get(sel_key, ()))
+                        if st.session_state.get(all_key):
+                            current |= set(shown)
+                        else:
+                            current -= set(shown)
+                        st.session_state[sel_key] = current
+
                     select_all_groups = all_col.checkbox(
                         "Select all shown",
                         value=False,
-                        key=f"split_select_all_{safe_col}",
+                        key=all_key,
+                        on_change=_on_select_all_toggle,
                     )
                     if group_search:
                         st.caption(f"Showing {len(visible_groups):,} of {len(ordered_groups):,} groups matching “{group_search}”.")
 
-                    sel_key = f"split_selected_{safe_col}"
                     selected_set = set(st.session_state.get(sel_key, ()))
                     groups_table = pd.DataFrame(
-                        [{"Select": bool(select_all_groups or k in selected_set), "Group": k, "Rows": group_counts[k]}
+                        [{"Select": k in selected_set, "Group": k, "Rows": group_counts[k]}
                          for k in visible_groups]
                     )
                     # Key includes the column, select-all state and search so the editor resets when any changes.

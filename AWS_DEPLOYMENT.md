@@ -356,17 +356,66 @@ After changing only the secret: `aws ecs update-service --cluster leadflow --ser
 
 ## 6. Cut-over order and verification
 
-1. Create RDS, the app role and the migration host (4.1–4.4). Supabase stays live and unchanged.
-2. **Freeze writes**: tell admins not to upload to the Database page until step 8.
-3. Record the source (from any machine with the current secrets.toml; read-only):
+> **Do not lift the upload freeze while the old Streamlit Community Cloud deployment remains
+> capable of writing to the Supabase database.** The old app writes to Supabase; the AWS app
+> writes to RDS. If both accept uploads, LeadFlow's data silently splits between two databases.
+
+### 6.1 Who does what
+
+| Status | Item |
+|---|---|
+| **Already tested** (24 Sep 2026, local rehearsal, no AWS) | `pg_dump` from Supabase through the session pooler; restore into PostgreSQL 16 and 17 as the non-superuser app role; `compare_inventory.py` PASS; 19 functional checks of the container against the restored copy; source verified unchanged afterwards; Docker image health check |
+| **Operator — AWS access** | Everything in section 4, the migration host, the ECS service, DNS for the certificate |
+| **Operator — Streamlit Community Cloud access** | Taking the old deployment offline (step 3) |
+| **Operator — people** | Announcing and lifting the freeze; telling users the new URL |
+| **Not yet tested anywhere** | All AWS resources; real browser login on the production URL; the Streamlit Community Cloud controls |
+
+### 6.2 Before cut-over day (no freeze needed)
+
+Create sections 4.1–4.4 (network, RDS, app role, migration host), 4.7 (IAM, ECR image, log group,
+cluster), 4.9 (certificate) and 4.10 (load balancer).
+
+**Do not create the ECS service yet.** On first start LeadFlow creates any missing tables; empty
+tables in RDS would collide with `pg_restore` in step 5.
+
+### 6.3 Cut-over sequence
+
+1. **Announce and start the upload freeze.** It covers every write path: uploads and merges on the
+   Database page, list rename/delete, *and* "Save the Cleaned Data to a Master List" (Step 07 on the
+   main page, available to every signed-in user). Nobody writes until step 11.
+2. **Note the old app's URL and how it is deployed** (which GitHub branch it tracks), so it can be
+   restored for rollback.
+3. **Take the old Streamlit Community Cloud deployment offline.** Using the current controls of the
+   Streamlit Community Cloud workspace, delete or otherwise stop the LeadFlow app so its URL no
+   longer serves LeadFlow. If you cannot remove it, at minimum delete the `[postgres]` section from
+   that app's secrets so it can no longer connect to Supabase.
+   *Verify:* opening the old URL does not show a working LeadFlow; or, if it still loads, its
+   Database page shows "Can't reach the database".
+   Note: if that app tracks `main`, merging this branch into `main` redeploys it; a merge is not a
+   way to disable it.
+4. **Record the source** (read-only; from any machine with the current `secrets.toml`):
    `python deploy/db_inventory.py source source.json`
-4. Dump and restore (4.5).
-5. Record the target (on the migration host, with `PG_HOST=$RDS_ENDPOINT PG_USER=leadflow_app PG_PASSWORD=... PG_DATABASE=leadflow PGSSLMODE=require`):
+5. **Dump and restore** (4.5).
+6. **Record and compare the target** (on the migration host, with `PG_HOST=$RDS_ENDPOINT
+   PG_USER=leadflow_app PG_PASSWORD=... PG_DATABASE=leadflow PGSSLMODE=require`):
    `python deploy/db_inventory.py rds target.json`
-6. `python deploy/compare_inventory.py source.json target.json` must print `OVERALL: PASS`.
-   **If it fails, stop.** Do not start the ECS service; investigate.
-7. Create the secret and the ECS service (4.6–4.11).
-8. Verify production, then lift the freeze:
+   `python deploy/compare_inventory.py source.json target.json` must print `OVERALL: PASS`.
+   **If it fails, stop.** Do not start the ECS service; keep the freeze; investigate.
+7. **Deploy the AWS app**: create the secret, register the task definition and create the ECS
+   service (4.6, 4.8, 4.11). Wait for `services-stable` and a healthy target.
+8. **Confirm the AWS app uses RDS**: its Database page caption reads
+   `Connected to leadflow at <RDS endpoint>:5432`, and the four tab counts equal `target.json`.
+   Then run checks 1–7 of the table below.
+9. **Confirm the old deployment cannot write to Supabase.** Re-check the old URL as in step 3, and
+   prove the source did not change during the cut-over:
+   `python deploy/db_inventory.py source-after source-after.json`
+   `python deploy/compare_inventory.py source.json source-after.json` must print `OVERALL: PASS`.
+   A FAIL means something wrote to Supabase after step 4: keep the freeze, find the writer, and
+   migrate again from step 4.
+10. **Direct everyone to the AWS URL**: announce it and update bookmarks and links.
+11. **Lift the freeze only if steps 3, 6, 8 and 9 all passed.** If any did not, the freeze stays.
+12. **Post-cut-over verification**: run checks 8–13 below on the AWS app. Repeat the step 9 source
+    comparison after one day; it must still PASS.
 
 | # | Check | Expected |
 |---|---|---|
@@ -380,11 +429,12 @@ After changing only the secret: `aws ecs update-service --cluster leadflow --ser
 | 8 | Upload a 3-row test file to MQL, Bounce and Unsub | counts rise by exactly 3; history row with date/time |
 | 9 | Merge a small Master file with 1 new + 2 existing emails | total +1, 2 skipped |
 | 10 | Main page: compare options visible under the uploader; run the pipeline; download | report shows Steps 6, 7, 7b, 7c; CSV downloads |
-| 11 | Split by field → type "Software" in the search | matching groups only; clearing shows all |
+| 11 | Split by field: search "Software"; tick "Select all shown"; untick it | only matching groups shown; ticking selects them; unticking clears them |
 | 12 | Log in as a `user`-role account | Database and Manage Users show "You need Admin access" |
 | 13 | UI in a dark-mode browser | all text readable |
 
-Use clearly named test lists (e.g. `__test_mql__`) so they can be deleted from the Database page afterwards.
+Checks 8–9 write to RDS only. Use clearly named test lists (e.g. `__test_mql__`) and delete them
+from the Database page afterwards.
 
 ---
 
@@ -397,6 +447,7 @@ Use clearly named test lists (e.g. `__test_mql__`) so they can be deleted from t
 * **Bad app release**: `aws ecs update-service --cluster leadflow --service leadflow --task-definition leadflow:<previous-revision>`.
 * **Stop the app safely**: `aws ecs update-service --cluster leadflow --service leadflow --desired-count 0` (RDS keeps running; data is untouched).
 * **Fall back to Supabase**: set `PG_HOST`, `PG_PORT` (6543), `PG_DATABASE` (`postgres`), `PG_USER`, `PG_PASSWORD` in `leadflow/app` back to the Supabase pooler values and force a new deployment. Writes made on RDS after cut-over are not in Supabase; dump/restore them back if needed.
+  Run only one writable LeadFlow at a time: either the AWS app or a restored Streamlit Community Cloud app, never both.
 * **Keep the Supabase data** untouched until production has run cleanly on RDS for an agreed period. The Supabase project itself stays permanently (Auth + profiles).
 
 ---
