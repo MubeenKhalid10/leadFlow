@@ -1,0 +1,48 @@
+# Virtual environments
+.venv
+venv
+env
+
+# Python artefacts
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+
+# Version control / editors
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.devcontainer
+
+# Secrets — must never be baked into the image
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+secrets.toml
+
+# Docker / docs not needed inside the image
+Dockerfile
+.dockerignore
+AWS_DEPLOYMENT.md
+README.md
+
+# Database dumps / backups and keys — never ship in the image
+*.dump
+*.backup
+*.sql.gz
+*.bak
+dumps
+backups
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*credentials*
+.aws
+*.secret.json

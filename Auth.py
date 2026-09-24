@@ -25,6 +25,9 @@ ONE-TIME SUPABASE SETUP
         url = "https://YOUR-PROJECT.supabase.co"
         anon_key = "eyJhbGciOi..."
 
+   or, for Docker / AWS deployments, set the environment variables
+   SUPABASE_URL and SUPABASE_KEY instead (secrets win when both exist).
+
 4. In the Supabase SQL editor, run this once to create the roles table,
    auto-provision a profile row on signup, and set up RLS so:
      - every user can read/update their OWN profile
@@ -96,33 +99,159 @@ ONE-TIME SUPABASE SETUP
 
 from __future__ import annotations
 
+import json
+import os
+from urllib.parse import quote, unquote
+
 import streamlit as st
+import streamlit.components.v1 as components
 
 try:
-    from supabase import create_client, Client
+    from supabase import create_client, Client, ClientOptions
 except ImportError:  # pragma: no cover - package not installed yet
     create_client = None
     Client = None
+    ClientOptions = None
 
 
 # ------------------------------------------------------------------------- #
 # Client
 # ------------------------------------------------------------------------- #
-@st.cache_resource(show_spinner=False)
-def get_client() -> "Client":
-    """Returns a cached Supabase client built from st.secrets['supabase']."""
+def _credentials() -> tuple[str, str]:
     if create_client is None:
         raise RuntimeError(
             "The `supabase` package isn't installed. Run: pip install supabase"
         )
-    cfg = st.secrets.get("supabase", {})
-    url, key = cfg.get("url"), cfg.get("anon_key")
+    # 1) Streamlit secrets ([supabase] url / anon_key) — local development.
+    #    st.secrets raises when no secrets file exists at all (e.g. in Docker),
+    #    so guard it and fall through to the environment.
+    url = key = None
+    try:
+        cfg = st.secrets.get("supabase", None) or {}
+        url, key = cfg.get("url"), cfg.get("anon_key")
+    except Exception:
+        pass
+    # 2) Environment variables — AWS / Docker deployment.
+    if not url:
+        url = os.environ.get("SUPABASE_URL")
+    if not key:
+        key = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
     if not url or not key:
         raise RuntimeError(
-            "Missing Supabase credentials. Add a [supabase] url / anon_key "
-            "section to .streamlit/secrets.toml (see auth.py docstring)."
+            "Missing Supabase credentials. Add a [supabase] url / anon_key section to "
+            ".streamlit/secrets.toml, or set the SUPABASE_URL and SUPABASE_KEY "
+            "environment variables (see auth.py docstring)."
         )
+    return url, key
+
+
+@st.cache_resource(show_spinner=False)
+def _anon_client() -> "Client":
+    """Process-wide anonymous client (no user session attached)."""
+    url, key = _credentials()
     return create_client(url, key)
+
+
+def _new_session_client() -> "Client":
+    """A client dedicated to ONE browser session.
+
+    Auth state (tokens) is stored on the client object, so sharing a single
+    client between users would mix their sessions. Background token refresh is
+    off; get_session() refreshes on demand instead (see get_client()).
+    """
+    url, key = _credentials()
+    return create_client(url, key, options=ClientOptions(auto_refresh_token=False))
+
+
+def get_client() -> "Client":
+    """Returns the signed-in user's own client (tokens refreshed if needed),
+    or the shared anonymous client when nobody is signed in."""
+    client = st.session_state.get("_auth_client")
+    if client is None:
+        return _anon_client()
+    try:
+        session = client.auth.get_session()  # refreshes when expired
+        if session is not None:
+            stored = st.session_state.get("_auth_session") or {}
+            if session.access_token != stored.get("access_token"):
+                _store_session(session)
+    except Exception:
+        pass
+    return client
+
+
+# ------------------------------------------------------------------------- #
+# Persistent login (browser cookie)
+# ------------------------------------------------------------------------- #
+# Streamlit's session_state dies on every browser refresh, so the Supabase
+# token pair is also kept in a cookie. On a fresh Streamlit session the cookie
+# is read back (st.context.cookies) and the Supabase session is restored,
+# refreshing the access token when it has expired. When the refresh token
+# itself is no longer valid, the user simply sees the login form again.
+_COOKIE_NAME = "lf_auth"
+_COOKIE_MAX_AGE = 7 * 24 * 3600  # browser keeps it 7 days; Supabase decides real validity
+
+
+def _read_cookie() -> dict | None:
+    try:
+        raw = st.context.cookies.get(_COOKIE_NAME)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(unquote(raw))
+    except Exception:
+        return None
+    if isinstance(data, dict) and data.get("refresh_token") and data.get("access_token"):
+        return data
+    return None
+
+
+def _queue_cookie(value: dict | None) -> None:
+    """Remember a cookie write for the next script run (a st.rerun() right after
+    a login would otherwise drop the component that performs the write)."""
+    st.session_state["_auth_cookie_pending"] = value if value else "clear"
+
+
+def _flush_cookie() -> None:
+    pending = st.session_state.pop("_auth_cookie_pending", None)
+    if pending is None:
+        return
+    if pending == "clear":
+        js = f"parent.document.cookie = '{_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax';"
+    else:
+        val = quote(json.dumps(pending), safe="")
+        js = (
+            f"parent.document.cookie = '{_COOKIE_NAME}={val}; Max-Age={_COOKIE_MAX_AGE}; "
+            "Path=/; SameSite=Lax' + (parent.location.protocol === 'https:' ? '; Secure' : '');"
+        )
+    components.html(f"<script>{js}</script>", height=0, width=0)
+
+
+def _store_session(session) -> None:
+    tokens = {"access_token": session.access_token, "refresh_token": session.refresh_token}
+    st.session_state["_auth_session"] = tokens
+    _queue_cookie(tokens)
+
+
+def _restore_from_cookie() -> None:
+    """Rebuild the Supabase session from the cookie, if there is a usable one."""
+    if st.session_state.get("_auth_restore_attempted"):
+        return
+    st.session_state["_auth_restore_attempted"] = True
+    data = _read_cookie()
+    if not data:
+        return
+    try:
+        client = _new_session_client()
+        res = client.auth.set_session(data["access_token"], data["refresh_token"])
+        if res is None or res.session is None or res.user is None:
+            raise RuntimeError("no session")
+        st.session_state["_auth_client"] = client
+        _complete_login(client, res.session, res.user)  # role is re-read, never trusted from the cookie
+    except Exception:
+        _queue_cookie(None)
 
 
 def _fetch_role(client, user_id: str) -> str:
@@ -158,21 +287,23 @@ def has_role(*roles: str) -> bool:
 
 
 def log_out():
-    try:
-        get_client().auth.sign_out()
-    except Exception:
-        pass
+    client = st.session_state.get("_auth_client")
+    if client is not None:
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
     st.session_state.pop("_auth_user", None)
     st.session_state.pop("_auth_session", None)
+    st.session_state.pop("_auth_client", None)
+    _queue_cookie(None)
 
 
 def _complete_login(client, session, user):
     role = _fetch_role(client, user.id)
     st.session_state["_auth_user"] = {"id": user.id, "email": user.email, "role": role}
-    st.session_state["_auth_session"] = {
-        "access_token": session.access_token,
-        "refresh_token": session.refresh_token,
-    }
+    st.session_state["_auth_client"] = client
+    _store_session(session)
 
 
 # ------------------------------------------------------------------------- #
@@ -422,7 +553,7 @@ def _render_login_form():
                     submitted = st.form_submit_button("Log in", type="primary", width="stretch")
                 if submitted:
                     try:
-                        client = get_client()
+                        client = _new_session_client()
                         res = client.auth.sign_in_with_password(
                             {"email": email, "password": password}
                         )
@@ -445,7 +576,7 @@ def _render_login_form():
                     )
                 if submitted_signup:
                     try:
-                        client = get_client()
+                        client = _new_session_client()
                         res = client.auth.sign_up(
                             {"email": new_email, "password": new_password}
                         )
@@ -468,7 +599,12 @@ def _render_login_form():
 # ------------------------------------------------------------------------- #
 def require_login():
     """Call at the top of any page that needs a signed-in user.
-    Renders a login form and halts the page if nobody is signed in."""
+    Restores a previous login from the browser cookie (page refresh / reload /
+    navigating between pages), then renders a login form and halts the page
+    if nobody is signed in."""
+    if not is_logged_in():
+        _restore_from_cookie()
+    _flush_cookie()
     if not is_logged_in():
         _render_login_form()
 

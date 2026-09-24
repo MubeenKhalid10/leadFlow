@@ -10,6 +10,7 @@ Implements the full workflow:
 5. Remove duplicates within file (by Email)
 6. Remove records already in selected Master list(s) from the database (by Email)
 7. Remove bounced emails from selected Bounce list(s) in the database (by Email)
+7b/7c. Remove emails found in selected MQL / Unsub list(s) in the database (by Email)
 8. Arrange final column sequence
 9. Final quality check + summary report
 10. Optionally save the cleaned contacts back into a Master list (database)
@@ -689,11 +690,68 @@ raw_file_selected = st.file_uploader(
     help="The messy export you want cleaned — from a scraper, CRM, or list purchase. Supports CSV, XLSX, XLS, ZIP, or GZ.",
 )
 
-st.caption(
-    "🗄️ Master & Bounce suppression now come from your database. Pick which lists "
-    "to suppress against in **Step 03** below, and manage them on the "
-    "**Manage Suppression Database** page (left sidebar)."
+# ---- Compare against (Master / Bounce / MQL / Unsub from the database) ----
+# Shown right next to the uploader so the whole workflow is visible without scrolling.
+st.markdown(
+    '<div class="lf-upload-label">🔍 Compare Uploaded Data With</div>',
+    unsafe_allow_html=True,
 )
+selected_master_list_ids = []
+selected_bounce_list_ids = []
+selected_mql_list_ids = []
+selected_unsub_list_ids = []
+if not db_is_ready():
+    st.warning(
+        "Database not connected — Master/Bounce/MQL/Unsub comparison will be skipped. "
+        "See the banner at the top of the page to reconnect."
+    )
+else:
+    try:
+        _cat_lists = {
+            "master": db.get_master_lists(),
+            "bounce": db.get_bounce_lists(),
+            "mql": db.get_email_lists("mql"),
+            "unsub": db.get_email_lists("unsub"),
+        }
+    except Exception as e:
+        _cat_lists = {}
+        st.warning(f"Could not load lists from the database: {e}")
+
+    def _category_picker(cat, label, help_text, count_col):
+        """Checkbox for one category; when ticked, a multiselect of its lists (all by default)."""
+        lists_df = _cat_lists.get(cat)
+        if lists_df is None or lists_df.empty:
+            st.checkbox(f"{label} (no lists yet)", value=False, disabled=True, key=f"cmp_{cat}_empty")
+            return []
+        labels = {int(r.id): f"{r.name} ({int(getattr(r, count_col)):,})" for r in lists_df.itertuples()}
+        total = int(lists_df[count_col].sum())
+        checked = st.checkbox(f"{label} — {total:,} records", value=True, key=f"cmp_{cat}", help=help_text)
+        if not checked:
+            return []
+        options = list(labels.keys())
+        return st.multiselect(
+            f"{label} lists",
+            options=options,
+            default=options,
+            format_func=lambda i, m=labels: m.get(i, str(i)),
+            key=f"sel_{cat}_lists",
+            label_visibility="collapsed",
+        )
+
+    _cmp_cols = st.columns(4)
+    with _cmp_cols[0]:
+        selected_master_list_ids = _category_picker(
+            "master", "🗂️ Master File", "Remove contacts you already have.", "contact_count")
+    with _cmp_cols[1]:
+        selected_bounce_list_ids = _category_picker(
+            "bounce", "🚫 Bounce", "Remove previously bounced emails.", "email_count")
+    with _cmp_cols[2]:
+        selected_mql_list_ids = _category_picker(
+            "mql", "🎯 MQL", "Remove emails already stored as MQLs.", "email_count")
+    with _cmp_cols[3]:
+        selected_unsub_list_ids = _category_picker(
+            "unsub", "✋ Unsub", "Remove unsubscribed emails.", "email_count")
+    st.caption("Manage these categories on the **Database** page (left sidebar).")
 
 if st.button("📤  Use Selected File", type="primary"):
     upload_error = validate_upload(raw_file_selected) if raw_file_selected is not None else None
@@ -792,61 +850,6 @@ if active_raw_file is not None:
             help="Groups the cleaned output by any column you choose (Industry, Job Title, Company, ...). "
                  "Tick the groups you want and download them combined into one file.",
         )
-
-    selected_master_list_ids = []
-    selected_bounce_list_ids = []
-    with st.expander("🗄️ Suppression lists (from your database)", expanded=True):
-        if not db_is_ready():
-            st.warning(
-                "Database not connected — Master/Bounce suppression will be skipped. "
-                "See the banner at the top of the page to reconnect."
-            )
-        else:
-            st.caption(
-                "Choose which stored lists to suppress against. Import or manage lists on the "
-                "**Manage Suppression Database** page (left sidebar). All lists are selected by default."
-            )
-            try:
-                master_lists_df = db.get_master_lists()
-                bounce_lists_df = db.get_bounce_lists()
-            except Exception as e:
-                master_lists_df = pd.DataFrame()
-                bounce_lists_df = pd.DataFrame()
-                st.warning(f"Could not load lists from the database: {e}")
-
-            sup_c1, sup_c2 = st.columns(2)
-            with sup_c1:
-                if master_lists_df is not None and not master_lists_df.empty:
-                    m_labels = {
-                        int(r.id): f"{r.name} ({int(r.contact_count):,})"
-                        for r in master_lists_df.itertuples()
-                    }
-                    m_options = list(m_labels.keys())
-                    selected_master_list_ids = st.multiselect(
-                        "🗂️ Master lists — remove contacts you already have",
-                        options=m_options,
-                        default=m_options,
-                        format_func=lambda i: m_labels.get(i, str(i)),
-                        key="sel_master_lists",
-                    )
-                else:
-                    st.info("No Master lists yet. Add one on the Manage Suppression Database page.")
-            with sup_c2:
-                if bounce_lists_df is not None and not bounce_lists_df.empty:
-                    b_labels = {
-                        int(r.id): f"{r.name} ({int(r.email_count):,})"
-                        for r in bounce_lists_df.itertuples()
-                    }
-                    b_options = list(b_labels.keys())
-                    selected_bounce_list_ids = st.multiselect(
-                        "🚫 Bounce lists — remove previously bounced emails",
-                        options=b_options,
-                        default=b_options,
-                        format_func=lambda i: b_labels.get(i, str(i)),
-                        key="sel_bounce_lists",
-                    )
-                else:
-                    st.info("No Bounce lists yet. Add one on the Manage Suppression Database page.")
 
     section_header("04-Process The Data Files", "Run Processing")
     st.caption("▶️ Runs the full cleaning workflow and prepares campaign-ready output.")
@@ -1002,6 +1005,31 @@ if active_raw_file is not None:
                 report.append("Step 7 - Database not connected, Bounce suppression skipped")
             else:
                 report.append("Step 7 - No Bounce list selected, step skipped")
+
+            # ---- STEP 7b / 7c: Remove MQL and Unsub emails (from selected lists) ----
+            for _step, _cat, _label, _ids in (
+                ("7b", "mql", "MQL", selected_mql_list_ids),
+                ("7c", "unsub", "Unsub", selected_unsub_list_ids),
+            ):
+                if db_is_ready() and _ids:
+                    try:
+                        with st.spinner(f"Checking emails against the selected {_label} list(s) in the database..."):
+                            _hits = db.find_existing_emails(_cat, std["__email_lower"].tolist(), _ids)
+                    except Exception as e:
+                        st.error(f"Could not check {_label} emails in the database: {e}")
+                        st.stop()
+                    before = len(std)
+                    std = std[~std["__email_lower"].isin(_hits)].reset_index(drop=True)
+                    report.append(
+                        f"Step {_step} - Removed {_label} emails: "
+                        f"{before - len(std):,} rows removed ({len(_hits):,} matches found)"
+                    )
+                    del _hits
+                    gc.collect()
+                elif not db_is_ready():
+                    report.append(f"Step {_step} - Database not connected, {_label} suppression skipped")
+                else:
+                    report.append(f"Step {_step} - No {_label} list selected, step skipped")
 
             std = std.drop(columns="__email_lower")
 
@@ -1280,16 +1308,32 @@ if active_raw_file is not None:
                         "Blank values are grouped under 'Unknown'."
                     )
 
-                    select_all_groups = st.checkbox(
-                        "Select all groups",
+                    # Search box: type part of a value (e.g. "Software") to narrow the table.
+                    # Selections are remembered across searches so you can pick from several.
+                    search_col, all_col = st.columns([3, 1])
+                    group_search = search_col.text_input(
+                        f"🔎 Search {split_col_choice}",
+                        key=f"split_group_search_{safe_col}",
+                        placeholder="Type to find a value, e.g. Software, Healthcare, Finance, SaaS…",
+                    ).strip().lower()
+                    visible_groups = (
+                        [g for g in ordered_groups if group_search in g.lower()] if group_search else ordered_groups
+                    )
+                    select_all_groups = all_col.checkbox(
+                        "Select all shown",
                         value=False,
                         key=f"split_select_all_{safe_col}",
                     )
+                    if group_search:
+                        st.caption(f"Showing {len(visible_groups):,} of {len(ordered_groups):,} groups matching “{group_search}”.")
 
+                    sel_key = f"split_selected_{safe_col}"
+                    selected_set = set(st.session_state.get(sel_key, ()))
                     groups_table = pd.DataFrame(
-                        [{"Select": select_all_groups, "Group": k, "Rows": group_counts[k]} for k in ordered_groups]
+                        [{"Select": bool(select_all_groups or k in selected_set), "Group": k, "Rows": group_counts[k]}
+                         for k in visible_groups]
                     )
-                    # Key includes the column and select-all state so the editor resets when either changes.
+                    # Key includes the column, select-all state and search so the editor resets when any changes.
                     edited_groups = st.data_editor(
                         groups_table,
                         column_config={
@@ -1300,10 +1344,18 @@ if active_raw_file is not None:
                         disabled=["Group", "Rows"],
                         hide_index=True,
                         width="stretch",
-                        key=f"split_group_editor_{safe_col}_{int(select_all_groups)}",
+                        key=f"split_group_editor_{safe_col}_{int(select_all_groups)}_{hash(group_search) & 0xFFFFFFFF}",
                     )
 
-                    selected_groups = edited_groups.loc[edited_groups["Select"].fillna(False).astype(bool), "Group"].tolist()
+                    if not edited_groups.empty:
+                        visible_selected = set(
+                            edited_groups.loc[edited_groups["Select"].fillna(False).astype(bool), "Group"].tolist()
+                        )
+                    else:
+                        visible_selected = set()
+                    selected_set = (selected_set - set(visible_groups)) | visible_selected
+                    st.session_state[sel_key] = selected_set
+                    selected_groups = [g for g in ordered_groups if g in selected_set]
 
                     if not selected_groups:
                         st.info("Tick one or more groups above to build a combined download.")

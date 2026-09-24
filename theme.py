@@ -178,6 +178,58 @@ def inject_theme():
         }
 
         /* ---------------------------------------------------------------
+           TEXT VISIBILITY
+           LeadFlow is a light-surface design. Browsers in dark mode used to
+           make Streamlit render white default text on these light surfaces,
+           so headings/labels/table text disappeared. Pin the colour scheme
+           and the base text colour here (config.toml [theme] does the same
+           for Streamlit's own widgets), so every page inherits readable text.
+           --------------------------------------------------------------- */
+        :root, .stApp {
+            color-scheme: light;
+        }
+        [data-testid="stAppViewContainer"] [data-testid="stMain"],
+        [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stMarkdownContainer"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stWidgetLabel"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stCaptionContainer"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stExpander"] summary,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stMetricLabel"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stFileUploader"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stCheckbox"],
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] .stDataFrame,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stTable"] {
+            color: var(--lf-body);
+        }
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] h1,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] h2,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] h3,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] h4,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stMetricValue"] {
+            color: var(--lf-title);
+        }
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] input,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] textarea,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-baseweb="select"] div,
+        [data-baseweb="popover"] [role="option"],
+        [data-baseweb="menu"] [role="option"] {
+            color: var(--lf-title);
+        }
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] input,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] textarea,
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-baseweb="select"] > div,
+        [data-baseweb="popover"] ul,
+        [data-baseweb="menu"] {
+            background-color: #ffffff;
+        }
+        /* Keep white text on filled primary buttons and the active tab. */
+        .stButton > button[kind="primary"] *,
+        [data-testid="stDownloadButton"] > button[kind="primary"] *,
+        [data-testid="stTabs"] [aria-selected="true"] * {
+            color: #ffffff !important;
+        }
+
+        /* ---------------------------------------------------------------
            MAIN BACKGROUND
            --------------------------------------------------------------- */
         .stApp {
