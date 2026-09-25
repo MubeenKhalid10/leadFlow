@@ -560,7 +560,8 @@ def _render_login_form():
                         _complete_login(client, res.session, res.user)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Login failed: {e}")
+                        st.error("**We couldn't sign you in.** Check your email and password and try again.", icon="⚠️")
+                        st.caption(f"Details: {e}")
 
             with tab_signup:
                 with st.form("signup_form"):
@@ -589,7 +590,9 @@ def _render_login_form():
                             _complete_login(client, res.session, res.user)
                             st.rerun()
                     except Exception as e:
-                        st.error(f"Sign up failed: {e}")
+                        st.error("**We couldn't create your account.** Check your email address and use a password "
+                                 "of at least 6 characters, then try again.", icon="⚠️")
+                        st.caption(f"Details: {e}")
 
     st.stop()
 

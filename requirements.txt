@@ -1,7 +1,10 @@
-streamlit
-pandas
-openpyxl
-pyarrow
-psycopg2-binary
-supabase
-xlrd
+# Pinned to the versions validated by the AWS-preparation tests (Docker image on
+# Python 3.11, 24 Sep 2026). Upgrade deliberately and re-run the tests.
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.4.6
+openpyxl==3.1.5
+pyarrow==25.0.1
+psycopg2-binary==2.9.13
+supabase==2.31.0
+xlrd==2.0.2

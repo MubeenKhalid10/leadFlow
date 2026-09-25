@@ -3,6 +3,10 @@ maxUploadSize = 1000
 maxMessageSize = 1000
 enableXsrfProtection = true
 
+[client]
+# Pages are listed with friendly names by theme.sidebar_nav() instead.
+showSidebarNavigation = false
+
 [browser]
 gatherUsageStats = false
 
