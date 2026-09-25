@@ -15,7 +15,12 @@ Usage on each page (after st.set_page_config):
     theme.section_header("01-Upload the Files", "Upload")
 """
 
+import html
+import logging
+
 import streamlit as st
+
+_log = logging.getLogger("leadflow")
 
 
 SECTION_ICONS = {
@@ -29,7 +34,27 @@ SECTION_ICONS = {
     "Manage Lists": "🗄️",
     "Import": "📥",
     "Database": "🗃️",
+    "Clean": "🧹",
+    "Results": "📊",
+    "Merge": "📥",
+    "Overview": "📊",
+    "History": "🕒",
+    "Storage": "💾",
+    "Review": "🔍",
+    "Options": "⚙️",
+    "Save": "💾",
+    "Add leads": "📥",
+    "Add emails": "📥",
+    "Your lists": "🗄️",
 }
+
+# The main page's workflow, shown as a progress strip under the top bar.
+WORKFLOW_STEPS = [
+    ("Upload", "Add your lead file"),
+    ("Review", "Check columns & options"),
+    ("Clean", "Remove bad & duplicate leads"),
+    ("Download", "Split & download your campaign"),
+]
 
 
 @st.dialog("How LeadFlow works")
@@ -38,27 +63,29 @@ def show_how_it_works():
         """
         ### Clean your lead data in 5 steps
 
-        **1. Upload your raw file and choose what to compare against**
-        Upload the raw lead file you want cleaned. Right below the uploader,
-        tick which stored data to compare against: Master File, Bounce, MQL
-        and Unsub. Admins manage that data on the **🗄️ Database** page.
+        **1. Upload your lead file**
+        Add the CSV or Excel file you want cleaned. Right below it, tick which
+        saved lists to exclude: **Master leads** (leads you already have),
+        **Bounced**, **MQL** and **Unsubscribed**. Admins manage those lists on
+        the **🗄️ Database** page.
 
-        **2. Review your data**
-        Preview the uploaded data and confirm the detected column mapping.
+        **2. Check your data**
+        Look over the preview and confirm LeadFlow matched your columns
+        correctly. Only the **Email** column is required.
 
-        **3. Set your options**
-        Choose the Indian-contact filtering and how the output is split
-        (by country, or by a field such as Industry).
+        **3. Choose your options**
+        Decide whether to remove contacts based in India, and how you'd like to
+        split your download (by country, or by a field such as Job Title).
 
-        **4. Run the cleaning pipeline**
-        LeadFlow removes blank emails, filters Indian contacts, separates
-        special-character records, removes duplicate emails, and removes
-        contacts found in the Master File, Bounce, MQL and Unsub lists you
-        selected.
+        **4. Clean your leads**
+        LeadFlow removes leads with no email, contacts based in India, rows with
+        garbled characters, duplicate leads, and anyone on the lists you ticked.
 
-        **5. Export & update**
-        Download the campaign-ready file, then optionally save the cleaned
-        contacts back into a Master list for next time.
+        **5. Download & save**
+        Download the full campaign file, or split it by country or field.
+        Downloading a split file removes those leads from the campaign file, so
+        nobody is sent the same campaign twice. You can also save the cleaned
+        leads to a Master list so they're excluded next time.
         """
     )
 
@@ -117,11 +144,44 @@ def inject_sidebar_title():
     )
 
 
-def section_header(number, title):
-    """Renders a numbered section badge + kicker + heading."""
-    icon = SECTION_ICONS.get(title, "")
+# Sidebar menu: (page file, label, icon, admin only, tooltip). Replaces Streamlit's
+# file-name based menu (hidden via client.showSidebarNavigation in config.toml).
+NAV_PAGES = [
+    ("app.py", "Clean Leads", "🧹", False, "Upload a lead file, clean it and download your campaign."),
+    ("pages/1_Database.py", "Lead Database", "🗄️", True, "Your saved Master, MQL, Bounced and Unsubscribed lists."),
+    ("pages/2_Manage_Users.py", "Manage Users", "👥", True, "Give teammates admin access."),
+]
+
+
+def sidebar_nav(user=None, current="app.py"):
+    """Named page links in the sidebar. Admin pages stay visible to everyone (they guard
+    themselves) but are greyed out for non-admins so it's clear they need admin access.
+    `current` is this page's file, so its link can be highlighted."""
+    is_admin = bool(user) and user.get("role") == "admin"
+    with st.sidebar:
+        st.markdown('<div class="lf-sidebar-nav-label">Menu</div>', unsafe_allow_html=True)
+        for page, label, icon, admin_only, tip in NAV_PAGES:
+            locked = admin_only and not is_admin
+            # st.page_link exposes no "current page" attribute, so wrap it in a keyed container for the CSS.
+            slot = st.container(key="lf_nav_current") if page == current else st.container()
+            try:
+                slot.page_link(
+                    page,
+                    label=f"{label} (admins only)" if locked else label,
+                    icon=icon,
+                    help="Only admins can open this page." if locked else tip,
+                    disabled=locked,
+                )
+            except Exception as e:  # e.g. a page file missing from this deployment
+                _log.warning("Sidebar link to %s unavailable: %s", page, e)
+
+
+def section_header(number, title, subtitle=None):
+    """Renders a numbered section badge + kicker + heading (+ optional one-line explanation)."""
     step_no = number.split("-", 1)[0].strip()
     kicker = number.split("-", 1)[1].strip() if "-" in number else title
+    icon = SECTION_ICONS.get(title) or SECTION_ICONS.get(kicker, "")
+    sub = f'<div class="lf-section-sub">{subtitle}</div>' if subtitle else ""
     st.markdown(
         f"""
         <div class="lf-section-head">
@@ -129,11 +189,57 @@ def section_header(number, title):
             <div class="lf-section-text">
                 <div class="lf-section-kicker">{kicker}</div>
                 <h2>{icon}&nbsp;{title}</h2>
+                {sub}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def workflow_steps(current, target=None):
+    """Progress strip for the main workflow. Steps before `current` (0-based) are done.
+
+    Pass an st.empty() as `target` to redraw it in place later in the same run.
+    """
+    parts = []
+    for i, (label, hint) in enumerate(WORKFLOW_STEPS):
+        state = "done" if i < current else ("active" if i == current else "todo")
+        mark = "✓" if state == "done" else str(i + 1)
+        status = {"done": "completed", "active": "current step", "todo": "not started"}[state]
+        aria = ' aria-current="step"' if state == "active" else ""
+        if i:
+            parts.append(f'<div class="lf-step-line {"done" if i <= current else ""}"></div>')
+        parts.append(
+            f'<div class="lf-step {state}"{aria}>'
+            f'<span class="lf-step-dot" aria-hidden="true">{mark}</span>'
+            f'<span class="lf-step-text"><span class="lf-step-label">{label}</span>'
+            f'<span class="lf-step-hint">{hint}</span></span>'
+            f'<span class="lf-sr-only">({status})</span></div>'
+        )
+    (target or st).markdown(
+        f'<nav class="lf-stepper" aria-label="Progress">{"".join(parts)}</nav>',
+        unsafe_allow_html=True,
+    )
+
+
+def empty_state(icon, title, text=""):
+    """Friendly placeholder for a section with nothing to show yet."""
+    st.markdown(
+        f'<div class="lf-empty"><div class="lf-empty-icon" aria-hidden="true">{icon}</div>'
+        f'<div class="lf-empty-title">{title}</div>'
+        + (f'<div class="lf-empty-text">{text}</div>' if text else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def friendly_error(title, message, error=None):
+    """Plain-language error with a next step; the raw error goes to the log and a small caption."""
+    st.error(f"**{title}**  \n{message}", icon="⚠️")
+    if error is not None:
+        _log.error("%s: %s", title, error, exc_info=error if isinstance(error, BaseException) else None)
+        st.caption(f"Technical details: {type(error).__name__}: {html.escape(str(error))[:500]}")
 
 
 def inject_theme():
@@ -225,8 +331,8 @@ def inject_theme():
             background-color: #ffffff;
         }
         /* Keep white text on filled primary buttons and the active tab. */
-        .stButton > button[kind="primary"] *,
-        [data-testid="stDownloadButton"] > button[kind="primary"] *,
+        .stButton button[kind="primary"] *,
+        [data-testid="stDownloadButton"] button[kind="primary"] *,
         [data-testid="stTabs"] [aria-selected="true"] * {
             color: #ffffff !important;
         }
@@ -375,6 +481,50 @@ def inject_theme():
             color: inherit !important;
         }
 
+        /* Named page links (theme.sidebar_nav) — same look as the built-in menu */
+        [data-testid="stSidebar"] [data-testid="stPageLink"] {
+            padding: 0 0.75rem;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] {
+            border-radius: 10px !important;
+            padding: 0.6rem 0.9rem !important;
+            margin-bottom: 0.2rem !important;
+            font-weight: 600 !important;
+            background: transparent !important;
+            border: 1px solid transparent !important;
+            transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease !important;
+        }
+
+        [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] span,
+        [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] p,
+        [data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] [data-testid="stMarkdownContainer"] p {
+            color: #b9bdf0 !important;
+            font-size: 0.9rem !important;
+            font-weight: 600 !important;
+        }
+
+        [data-testid="stSidebar"] a[data-testid="stPageLink-NavLink"]:hover {
+            background: rgba(99, 102, 241, 0.12) !important;
+            border-color: rgba(99, 102, 241, 0.25) !important;
+            transform: translateX(2px);
+        }
+
+        [data-testid="stSidebar"] div.st-key-lf_nav_current [data-testid="stPageLink-NavLink"] {
+            background: linear-gradient(135deg, rgba(79, 70, 229, 0.3) 0%, rgba(99, 102, 241, 0.18) 100%) !important;
+            border-color: rgba(129, 140, 248, 0.45) !important;
+        }
+
+        [data-testid="stSidebar"] div.st-key-lf_nav_current [data-testid="stPageLink-NavLink"] span,
+        [data-testid="stSidebar"] div.st-key-lf_nav_current [data-testid="stPageLink-NavLink"] p {
+            color: #ffffff !important;
+        }
+
+        [data-testid="stSidebar"] .lf-sidebar-nav-label {
+            color: #6b6f9a !important;
+            padding: 0.6rem 1.6rem 0.35rem;
+        }
+
         /* Sidebar widget labels and text */
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] p,
@@ -393,13 +543,13 @@ def inject_theme():
             font-size: 0.8rem;
         }
 
-        [data-testid="stSidebar"] .stButton > button {
+        [data-testid="stSidebar"] .stButton button {
             background: rgba(99, 102, 241, 0.12) !important;
             color: #a5b4fc !important;
             border: 1px solid rgba(99, 102, 241, 0.25) !important;
         }
 
-        [data-testid="stSidebar"] .stButton > button:hover {
+        [data-testid="stSidebar"] .stButton button:hover {
             background: rgba(99, 102, 241, 0.22) !important;
             color: #c7d2fe !important;
             border-color: rgba(99, 102, 241, 0.4) !important;
@@ -473,7 +623,7 @@ def inject_theme():
             margin: 0 !important;
         }
 
-        div.st-key-lf_sidebar_user_box .stButton > button {
+        div.st-key-lf_sidebar_user_box .stButton button {
             width: 100% !important;
             min-height: 2.35rem !important;
             border-radius: 9px !important;
@@ -485,7 +635,7 @@ def inject_theme():
             box-shadow: none !important;
         }
 
-        div.st-key-lf_sidebar_user_box .stButton > button:hover {
+        div.st-key-lf_sidebar_user_box .stButton button:hover {
             background: rgba(255, 255, 255, 0.16) !important;
             border-color: rgba(255, 255, 255, 0.3) !important;
             transform: none !important;
@@ -889,7 +1039,7 @@ def inject_theme():
         /* ---------------------------------------------------------------
            BUTTONS  (unified button system)
            --------------------------------------------------------------- */
-        .stButton > button, [data-testid="stDownloadButton"] > button {
+        .stButton button, [data-testid="stDownloadButton"] button {
             border-radius: 10px !important;
             font-weight: 700 !important;
             min-height: 2.6rem;
@@ -900,38 +1050,38 @@ def inject_theme():
         }
 
         /* Primary CTAs */
-        .stButton > button[kind="primary"],
-        [data-testid="stDownloadButton"] > button[kind="primary"] {
+        .stButton button[kind="primary"],
+        [data-testid="stDownloadButton"] button[kind="primary"] {
             background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
             color: #ffffff !important;
             box-shadow: var(--lf-shadow-primary) !important;
             border: 1px solid transparent !important;
         }
 
-        .stButton > button[kind="primary"]:hover,
-        [data-testid="stDownloadButton"] > button[kind="primary"]:hover {
+        .stButton button[kind="primary"]:hover,
+        [data-testid="stDownloadButton"] button[kind="primary"]:hover {
             transform: translateY(-2px);
             box-shadow: 0 14px 28px rgba(79, 70, 229, 0.35) !important;
             filter: brightness(1.05);
         }
 
-        .stButton > button[kind="primary"]:active,
-        [data-testid="stDownloadButton"] > button[kind="primary"]:active {
+        .stButton button[kind="primary"]:active,
+        [data-testid="stDownloadButton"] button[kind="primary"]:active {
             transform: translateY(0);
             box-shadow: var(--lf-shadow-primary) !important;
         }
 
         /* Secondary buttons */
-        .stButton > button[kind="secondary"],
-        [data-testid="stDownloadButton"] > button[kind="secondary"] {
+        .stButton button[kind="secondary"],
+        [data-testid="stDownloadButton"] button[kind="secondary"] {
             background: #ffffff !important;
             color: var(--lf-primary) !important;
             border: 1.5px solid var(--lf-primary) !important;
             box-shadow: none !important;
         }
 
-        .stButton > button[kind="secondary"]:hover,
-        [data-testid="stDownloadButton"] > button[kind="secondary"]:hover {
+        .stButton button[kind="secondary"]:hover,
+        [data-testid="stDownloadButton"] button[kind="secondary"]:hover {
             background: var(--lf-primary-soft) !important;
             color: var(--lf-primary) !important;
             border-color: var(--lf-primary) !important;
@@ -1056,6 +1206,13 @@ def inject_theme():
             100% { transform: translate(-50%, -50%) rotate(360deg); }
         }
 
+        @keyframes lf-overlay-in {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        /* Clicks are blocked at once, but the dimmed overlay only fades in if the
+           rerun takes longer than ~0.4s, so quick interactions don't flash the screen. */
         [data-testid="stApp"][data-test-script-state="running"]::before {
             content: "";
             position: fixed;
@@ -1069,6 +1226,7 @@ def inject_theme():
             z-index: 999990;
             pointer-events: all !important;
             cursor: wait !important;
+            animation: lf-overlay-in 0.2s ease 0.4s both;
         }
 
         [data-testid="stApp"][data-test-script-state="running"]::after {
@@ -1084,7 +1242,8 @@ def inject_theme():
             border-right: 4px solid var(--lf-primary-2);
             border-radius: 50%;
             z-index: 999999;
-            animation: global-spinner-spin 0.75s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            animation: lf-overlay-in 0.2s ease 0.4s both,
+                       global-spinner-spin 0.75s cubic-bezier(0.4, 0, 0.2, 1) infinite;
             pointer-events: none !important;
             box-shadow: 0 0 30px rgba(79, 70, 229, 0.4), 0 12px 30px rgba(0, 0, 0, 0.35);
         }
@@ -1152,6 +1311,193 @@ def inject_theme():
         .lf-badge-warning {
             background: var(--lf-warning-soft);
             color: var(--lf-warning);
+        }
+
+        /* ---------------------------------------------------------------
+           SECTION SUBTITLE / HELP TEXT
+           --------------------------------------------------------------- */
+        .lf-section-sub {
+            color: var(--lf-body);
+            font-size: 0.93rem;
+            font-weight: 500;
+            margin-top: 0.3rem;
+            line-height: 1.45;
+        }
+
+        .lf-sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+        }
+
+        /* ---------------------------------------------------------------
+           WORKFLOW STEPPER
+           --------------------------------------------------------------- */
+        .lf-stepper {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.85rem 1.1rem;
+            margin: 0 0 0.5rem;
+            background: var(--lf-surface);
+            border: 1px solid var(--lf-border);
+            border-radius: var(--lf-radius);
+            box-shadow: var(--lf-shadow-sm);
+        }
+
+        .lf-step {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            min-width: 0;
+        }
+
+        .lf-step-dot {
+            flex-shrink: 0;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 0.85rem;
+            border: 2px solid #c7cdea;
+            color: var(--lf-muted);
+            background: #ffffff;
+            transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+        }
+
+        .lf-step.done .lf-step-dot {
+            background: var(--lf-success);
+            border-color: var(--lf-success);
+            color: #ffffff;
+        }
+
+        .lf-step.active .lf-step-dot {
+            background: var(--lf-primary);
+            border-color: var(--lf-primary);
+            color: #ffffff;
+            box-shadow: 0 0 0 4px var(--lf-primary-glow);
+        }
+
+        .lf-step-text {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .lf-step-label {
+            font-weight: 800;
+            font-size: 0.9rem;
+            color: var(--lf-title);
+        }
+
+        .lf-step.todo .lf-step-label { color: var(--lf-muted); }
+
+        .lf-step-hint {
+            font-size: 0.74rem;
+            color: var(--lf-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .lf-step-line {
+            flex: 1;
+            height: 2px;
+            min-width: 1rem;
+            background: #e1e5f2;
+            border-radius: 2px;
+            transition: background 0.25s ease;
+        }
+
+        .lf-step-line.done { background: var(--lf-success); }
+
+        /* ---------------------------------------------------------------
+           EMPTY STATES
+           --------------------------------------------------------------- */
+        .lf-empty {
+            text-align: center;
+            padding: 1.6rem 1.2rem;
+            margin: 0.5rem 0 1rem;
+            border: 1.5px dashed #cfd5ec;
+            border-radius: var(--lf-radius);
+            background: #fbfcff;
+        }
+
+        .lf-empty-icon { font-size: 1.9rem; line-height: 1; margin-bottom: 0.45rem; }
+
+        .lf-empty-title {
+            font-weight: 800;
+            font-size: 1.02rem;
+            color: var(--lf-title);
+        }
+
+        .lf-empty-text {
+            color: var(--lf-body);
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Warning note shown next to split downloads */
+        .lf-note {
+            display: flex;
+            gap: 0.5rem;
+            align-items: flex-start;
+            padding: 0.6rem 0.85rem;
+            margin: 0.35rem 0 0.6rem;
+            border-radius: var(--lf-radius-sm);
+            background: var(--lf-warning-soft);
+            border: 1px solid #fcd34d;
+            color: #78350f;
+            font-size: 0.87rem;
+            font-weight: 600;
+        }
+
+        /* ---------------------------------------------------------------
+           MOTION — short, subtle entrance effects. Streamlit keeps unchanged
+           elements mounted across reruns, so these play when content first
+           appears, not on every click.
+           --------------------------------------------------------------- */
+        @keyframes lf-fade-up {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: none; }
+        }
+
+        .lf-section-head,
+        .lf-stepper,
+        .lf-empty,
+        .lf-note,
+        [data-testid="stMetric"],
+        [data-testid="stAlert"],
+        [data-testid="stExpander"] {
+            animation: lf-fade-up 0.28s ease-out both;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                animation-delay: 0s !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+
+        @media (max-width: 900px) {
+            .lf-step-hint { display: none; }
+            .lf-stepper { padding: 0.7rem 0.8rem; gap: 0.35rem; }
+        }
+
+        @media (max-width: 560px) {
+            /* Only the current step keeps its label on phones; the rest show just their dot. */
+            .lf-step:not(.active) .lf-step-text { display: none; }
+            .lf-step-label { font-size: 0.82rem; white-space: nowrap; }
+            .lf-step-dot { width: 26px; height: 26px; font-size: 0.78rem; }
+            .lf-step-line { min-width: 0.4rem; }
         }
 
         @media (max-width: 900px) {

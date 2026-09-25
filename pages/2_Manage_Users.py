@@ -20,24 +20,28 @@ theme.inject_sidebar_title()
 
 auth.require_role("admin")
 auth.render_user_badge()
+theme.sidebar_nav(auth.current_user(), current="pages/2_Manage_Users.py")
 
 st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
 theme.render_topbar(show_how=False)
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("## 👥 Manage Users")
-st.caption("Promote a teammate to admin, or move an admin back to a standard user.")
+st.caption(
+    "Choose who can manage the lead database. **Admins** can open the Lead Database and this page; "
+    "**Users** can clean and download leads."
+)
 
 try:
     client = auth.get_client()
     res = client.table("profiles").select("id, email, role, created_at").execute()
     profiles = pd.DataFrame(res.data or [])
 except Exception as e:
-    st.error(f"Couldn't load users: {e}")
+    theme.friendly_error("Couldn't load the list of users", "Please refresh the page and try again.", e)
     st.stop()
 
 if profiles.empty:
-    st.info("No users yet.")
+    theme.empty_state("👥", "No users yet", "People appear here after they create an account on the sign-in page.")
     st.stop()
 
 profiles = profiles.sort_values("created_at")
@@ -58,19 +62,21 @@ for row in profiles.itertuples():
             "Role",
             ["user", "admin"],
             index=["user", "admin"].index(row.role),
+            format_func=str.title,
             key=f"role_select_{row.id}",
             label_visibility="collapsed",
             disabled=is_self,
             help="You can't change your own role." if is_self else None,
         )
         if not is_self and new_role != row.role:
-            if st.button("Save", key=f"role_save_{row.id}", type="primary"):
+            if st.button("Save role", key=f"role_save_{row.id}", type="primary",
+                         help=f"Make {row.email} {'an admin' if new_role == 'admin' else 'a standard user'}."):
                 try:
                     client.table("profiles").update({"role": new_role}).eq(
                         "id", row.id
                     ).execute()
-                    st.success(f"Updated {row.email} to **{new_role}**.")
+                    st.toast(f"{row.email} is now {'an admin' if new_role == 'admin' else 'a standard user'}.", icon="✅")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Update failed: {e}")
+                    theme.friendly_error("Couldn't change this role", "Nothing was changed. Please try again.", e)
     st.divider()
