@@ -28,6 +28,7 @@ from dataio import (
     MAX_UNCOMPRESSED_UPLOAD_BYTES,
     auto_map_columns,
     extract_emails_from_file,
+    forget_file,
     get_upload_size,
     load_file,
     validate_upload,
@@ -69,7 +70,7 @@ if not _ok:
             "3. See the **README** for full setup steps.\n\n"
             f"**Technical details:** `{_err}`"
         )
-        if st.button("🔄 Retry database connection"):
+        if st.button("🔄 Retry database connection", key="retry_db_conn"):
             st.rerun()
     st.stop()
 
@@ -104,7 +105,7 @@ EMAIL_CATEGORIES = {
 
 
 def fmt_bytes(n) -> str:
-    if n is None:
+    if n is None or pd.isna(n):
         return "—"
     n = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -143,7 +144,7 @@ def history_table(category: str | None, limit: int = 200) -> pd.DataFrame:
     if hist.empty:
         return pd.DataFrame(
             columns=["Category", "List", "File", "File size", "Records in file", "Records added",
-                     "Skipped (existing)", "Uploaded by", "Upload date", "Upload time"]
+                     "Skipped (existing)", "Uploaded by", "Upload date", "Upload time", "Status"]
         )
     local = hist["uploaded_at"].map(_to_local)
     return pd.DataFrame(
@@ -158,6 +159,7 @@ def history_table(category: str | None, limit: int = 200) -> pd.DataFrame:
             "Uploaded by": hist["uploaded_by"],
             "Upload date": local.map(lambda t: f"{t:%d-%b-%Y}"),
             "Upload time": local.map(lambda t: f"{t:%I:%M %p}"),
+            "Status": hist["reverted_at"].map(lambda t: "" if pd.isna(t) else f"Reverted {fmt_datetime(t)}"),
         }
     )
 
@@ -170,8 +172,8 @@ def last_upload_text(category: str) -> str:
     return f"{fmt_datetime(row['uploaded_at'])} · {row['file_name']} ({int(row['rows_written']):,} added)"
 
 
-def log_upload(category, f, rows_in_file, rows_written, rows_skipped, list_name):
-    """Record one file import in upload_history (never blocks the import)."""
+def log_upload(category, f, rows_in_file, rows_written, rows_skipped, list_name, list_id=None):
+    """Record an import that added no rows in upload_history (never blocks the import)."""
     try:
         db.record_upload(
             category=category,
@@ -182,9 +184,16 @@ def log_upload(category, f, rows_in_file, rows_written, rows_skipped, list_name)
             list_name=list_name,
             file_size_bytes=get_upload_size(f),
             uploaded_by=(auth.current_user() or {}).get("email"),
+            list_id=list_id,
         )
     except Exception as e:
         st.warning(f"Your leads were imported, but this upload couldn't be added to the upload history ({e}).")
+
+
+def upload_meta(f, rows_in_file, list_name, **extra):
+    """What the database logs about a merge (written in the same transaction as its rows)."""
+    return dict(file_name=f.name, file_size_bytes=get_upload_size(f), rows_in_file=rows_in_file,
+                list_name=list_name, uploaded_by=(auth.current_user() or {}).get("email"), **extra)
 
 
 def records_from_master_df(df):
@@ -262,60 +271,127 @@ def pick_target_list(existing_names, key_prefix):
     return choice
 
 
-def render_list_manager(category: str, lists_df: pd.DataFrame, count_col: str, noun: str, key_prefix: str):
-    """Rename / preview / delete controls, one row per list."""
+def fmt_date(ts) -> str:
+    return "—" if ts is None or pd.isna(ts) else f"{_to_local(ts):%d-%b-%Y}"
+
+
+def _delete_list(category, list_id):
+    if category == "master":
+        db.delete_master_list(list_id)
+    else:
+        db.delete_email_list(category, list_id)
+
+
+@st.dialog("Delete this file?")
+def confirm_delete_file(category, list_id, name, rows, noun):
+    st.markdown(f"**{html.escape(str(name))}** and all **{rows:,} {noun}** in it will be permanently deleted.")
+    st.warning("This can't be undone. Its entries stay in the upload history.", icon="⚠️")
+    yes, no = st.columns(2)
+    if yes.button("🗑️ Delete permanently", key="del_confirm_file", type="primary", width="stretch"):
+        try:
+            _delete_list(category, list_id)
+        except Exception as e:
+            theme.friendly_error("Couldn't delete this file", "Nothing was deleted. Please try again.", e)
+            return
+        st.toast(f"Deleted '{name}' ({rows:,} {noun}).", icon="🗑️")
+        st.rerun()
+    if no.button("Cancel", key="reset_cancel_delete", width="stretch"):
+        st.rerun()
+
+
+@st.dialog("Revert this merge?")
+def confirm_revert(upload_id, file_name, list_name, added, noun, when):
+    st.markdown(
+        f"This removes the **{added:,} {noun}** that **{html.escape(str(file_name))}** added to "
+        f"**{html.escape(str(list_name))}** on {when}."
+    )
+    st.caption("Leads added by other merges, and leads that were already in the file, are not affected.")
+    st.warning("This can't be undone.", icon="⚠️")
+    yes, no = st.columns(2)
+    if yes.button("↩️ Revert merge", key="del_confirm_revert", type="primary", width="stretch"):
+        try:
+            removed = db.revert_upload(upload_id)
+        except Exception as e:
+            theme.friendly_error("Couldn't revert this merge", "Nothing was changed. Please try again.", e)
+            return
+        st.toast(f"Merge reverted: {removed:,} {noun} removed from '{list_name}'.", icon="↩️")
+        st.rerun()
+    if no.button("Cancel", key="reset_cancel_revert", width="stretch"):
+        st.rerun()
+
+
+def _table_header(cols, labels):
+    for col, label in zip(cols, labels):
+        if label:
+            col.markdown(f"**{label}**")
+
+
+def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows):
+    """One row per file (saved list): created date, rows, approximate size, merges, delete."""
     if lists_df.empty:
-        theme.empty_state("📭", "No lists yet", "Upload a file above to create your first list.")
+        theme.empty_state("📭", "No files yet", "Upload a file above to create your first one.")
         return
-    total = int(lists_df[count_col].sum())
-    st.caption(f"{len(lists_df)} list(s) · {total:,} {noun} total")
+    try:
+        merges = db.get_merge_counts(category)
+    except Exception:
+        merges = {}
+    per_row = storage_bytes / stored_rows if storage_bytes and stored_rows else None
+    widths = [4, 2, 2, 2, 1.5, 1.8]
+    st.caption(f"{len(lists_df)} file(s) · {int(lists_df[count_col].sum()):,} {noun} total. "
+               "Size is the approximate space the file uses in the database.")
+    _table_header(st.columns(widths), ["File", "Created", noun.capitalize(), "Size", "Merges", ""])
     for row in lists_df.itertuples():
-        head_l, head_c, head_r = st.columns([5, 2, 2])
-        head_l.markdown(f"**{row.name}**")
-        head_c.markdown(f"{'👥' if category == 'master' else '✉️'} {int(getattr(row, count_col)):,} {noun}")
-        head_r.caption(f"Created {pd.to_datetime(row.created_at):%Y-%m-%d}")
-        with st.expander("⚙️ Rename · preview · delete", expanded=False):
-            new_name = st.text_input("Rename to", value=row.name, key=f"{key_prefix}_rename_{row.id}")
-            act_l, act_r = st.columns(2)
-            if act_l.button("💾 Save name", key=f"{key_prefix}_save_{row.id}"):
-                try:
-                    if category == "master":
-                        db.rename_master_list(row.id, new_name)
-                    else:
-                        db.rename_email_list(category, row.id, new_name)
-                    st.toast(f"Renamed to '{new_name}'.", icon="✅")
-                    st.rerun()
-                except Exception as e:
-                    theme.friendly_error("Couldn't rename this list", "Please try again with a different name.", e)
-            if act_r.button("👁️ Preview first 20", key=f"{key_prefix}_prev_{row.id}"):
-                try:
-                    if category == "master":
-                        preview = db.get_master_contacts_df([row.id], limit=20)
-                    else:
-                        preview = db.get_emails_df(category, [row.id], limit=20)
-                    st.dataframe(preview, width="stretch")
-                except Exception as e:
-                    theme.friendly_error("Couldn't load a preview", "Please try again.", e)
-            st.markdown("---")
-            st.markdown(
-                f'<div class="lf-note">⚠️ Deleting removes <strong>{html.escape(str(row.name))}</strong> and all '
-                f'{int(getattr(row, count_col)):,} {noun} in it. This can\'t be undone.</div>',
-                unsafe_allow_html=True,
-            )
-            confirm = st.checkbox(
-                f"Yes, permanently delete this list and all its {noun}",
-                key=f"{key_prefix}_confirm_{row.id}",
-            )
-            if st.button("🗑️ Delete list", key=f"{key_prefix}_del_{row.id}", disabled=not confirm):
-                try:
-                    if category == "master":
-                        db.delete_master_list(row.id)
-                    else:
-                        db.delete_email_list(category, row.id)
-                    st.toast(f"Deleted '{row.name}'.", icon="🗑️")
-                    st.rerun()
-                except Exception as e:
-                    theme.friendly_error("Couldn't delete this list", "Nothing was deleted. Please try again.", e)
+        rows = int(getattr(row, count_col))
+        c = st.columns(widths, vertical_alignment="center")
+        c[0].markdown(f"**{html.escape(str(row.name))}**")
+        c[1].write(fmt_date(row.created_at))
+        c[2].write(f"{rows:,}")
+        c[3].write(f"≈ {fmt_bytes(rows * per_row)}" if per_row else "—")
+        c[4].write(f"{merges.get(int(row.id), 0):,}")
+        if c[5].button("🗑️ Delete", key=f"del_file_{category}_{row.id}", type="primary", width="stretch",
+                       help=f"Permanently delete this file and its {rows:,} {noun}. You'll be asked to confirm."):
+            confirm_delete_file(category, int(row.id), row.name, rows, noun)
+
+
+def render_merge_history(category, lists_df, noun):
+    """Every merge into one chosen file, with a revert button for each."""
+    if lists_df.empty:
+        theme.empty_state("🔀", "No files yet", "Merges appear here once you add a file.")
+        return
+    names = {int(r.id): r.name for r in lists_df.itertuples()}
+    list_id = st.selectbox(
+        "Choose a file", list(names), format_func=lambda i: names.get(i, str(i)), key=f"merge_file_{category}",
+        help="Shows every upload that was merged into this file.",
+    )
+    try:
+        merges = db.get_list_merges(category, list_id)
+    except Exception as e:
+        theme.friendly_error("Couldn't load the merge history", "Try refreshing the page.", e)
+        return
+    if merges.empty:
+        theme.empty_state("🔀", "No merges recorded for this file", "Merges appear here after you add a file to it.")
+        return
+    widths = [2.2, 3.5, 1.6, 2.6, 2.4, 1.8]
+    _table_header(st.columns(widths), ["Merged on", "File merged", noun.capitalize() + " added", "By", "Status", ""])
+    for m in merges.itertuples():
+        c = st.columns(widths, vertical_alignment="center")
+        added = int(m.rows_written or 0)
+        c[0].write(fmt_datetime(m.uploaded_at))
+        c[1].write(str(m.file_name))
+        c[2].write(f"{added:,}")
+        c[3].write(m.uploaded_by or "—")
+        if not pd.isna(m.reverted_at):
+            c[4].write(f"↩️ Reverted {fmt_date(m.reverted_at)}")
+        elif added == 0:
+            c[4].write("Nothing added")
+        elif pd.isna(m.batch_created_at):
+            c[4].markdown("Can't be reverted", help="This merge was recorded before revert was available, and "
+                          "its rows couldn't be matched with certainty, so it can't be reverted safely.")
+        else:
+            c[4].write("✅ In the file")
+            if c[5].button("↩️ Revert", key=f"del_revert_{m.id}", type="primary", width="stretch",
+                           help=f"Remove the {added:,} {noun} this merge added. You'll be asked to confirm."):
+                confirm_revert(int(m.id), m.file_name, names[list_id], added, noun, fmt_datetime(m.uploaded_at))
 
 
 # ============================================================================ #
@@ -434,7 +510,7 @@ with tab_master:
 
     master_target = pick_target_list(master_names, "master_target")
 
-    if st.button("📥  Add to Master database", type="primary", key="btn_import_master",
+    if st.button("📥  Add to Master database", type="primary", key="save_import_master",
                  help="Adds only the new leads from your file(s). Leads already saved are skipped."):
         clean_name = (master_target or "").strip()
         if not master_files:
@@ -461,6 +537,7 @@ with tab_master:
                         records, mapping = records_from_master_df(fdf)
                         if records is None:
                             skipped_files.append(f.name)
+                            forget_file(f)
                             continue
 
                         # --- Global dedup, server-side --------------------------
@@ -489,10 +566,16 @@ with tab_master:
                         written = 0
                         if records:
                             with st.spinner(f"Saving {len(records):,} new leads from {f.name}…"):
-                                written = db.upsert_master_contacts(list_id, records)
+                                # Logged in upload_history in the same transaction, so it can be reverted.
+                                written = db.upsert_master_contacts(
+                                    list_id, records,
+                                    upload=upload_meta(f, rows_in_file, clean_name, rows_skipped=dedup_skipped),
+                                )
                                 written_total += written
-                        log_upload("master", f, rows_in_file, written, dedup_skipped, clean_name)
+                        else:
+                            log_upload("master", f, rows_in_file, 0, dedup_skipped, clean_name, list_id)
                         del fdf, records, emails, existing
+                        forget_file(f)
 
                     messages = []
                     if skipped_files:
@@ -533,16 +616,21 @@ with tab_master:
                     )
 
     st.divider()
-    theme.section_header("03-Your lists", "Manage Lists", "Rename, preview or delete your Master lists.")
+    theme.section_header("03-Your files", "Your files", "Every Master file with its size and how many uploads were merged into it.")
     try:
         master_lists_df = db.get_master_lists()
     except Exception as e:
         master_lists_df = pd.DataFrame()
-        theme.friendly_error("Couldn't load your Master lists", "Try refreshing the page.", e)
-    render_list_manager("master", master_lists_df, "contact_count", "leads", "m")
+        theme.friendly_error("Couldn't load your Master files", "Try refreshing the page.", e)
+    render_files("master", master_lists_df, "contact_count", "leads",
+                 stor["master_bytes"] if stor else None, m["rows"])
 
     st.divider()
-    theme.section_header("04-History", "Upload history", "Every file added to your Master database.")
+    theme.section_header("04-Merges", "Merge history", "Every upload merged into a file. Revert a merge to remove the leads it added.")
+    render_merge_history("master", master_lists_df, "leads")
+
+    st.divider()
+    theme.section_header("05-History", "Upload history", "Every file added to your Master database.")
     show_history("master")
 
 
@@ -590,7 +678,7 @@ def render_email_category(category: str):
 
     target = pick_target_list(names, f"{category}_target")
 
-    if st.button(f"📥  Add to {label}", type="primary", key=f"btn_import_{category}",
+    if st.button(f"📥  Add to {label}", type="primary", key=f"save_import_{category}",
                  help="Saves the email addresses from your file(s). Emails already saved are skipped."):
         clean_name = (target or "").strip()
         if not files:
@@ -614,12 +702,15 @@ def render_email_category(category: str):
                         emails = extract_emails_from_file(fdf)
                         if emails is None or emails.empty:
                             skipped_files.append(f.name)
+                            forget_file(f)
                             continue
                         with st.spinner(f"Saving {len(emails):,} emails from {f.name}…"):
-                            written = db.upsert_emails(category, list_id, emails.tolist())
+                            # Logged in upload_history in the same transaction, so it can be reverted.
+                            written = db.upsert_emails(category, list_id, emails.tolist(),
+                                                       upload=upload_meta(f, rows_in_file, clean_name))
                         written_total += written
-                        log_upload(category, f, rows_in_file, written, max(rows_in_file - written, 0), clean_name)
                         del fdf, emails
+                        forget_file(f)
                     messages = []
                     if skipped_files:
                         messages.append(("warning",
@@ -648,17 +739,26 @@ def render_email_category(category: str):
                     )
 
     st.divider()
-    theme.section_header("03-History", "Upload history", f"Every file added to {label}.")
-    show_history(category)
-
-    st.divider()
-    theme.section_header("04-Your lists", "Manage Lists", f"Rename, preview or delete your {label} lists.")
+    theme.section_header("03-Your files", "Your files", f"Every {label} file with its size and how many uploads were merged into it.")
     try:
         lists_df = db.get_email_lists(category)
     except Exception as e:
         lists_df = pd.DataFrame()
-        theme.friendly_error(f"Couldn't load your {label} lists", "Try refreshing the page.", e)
-    render_list_manager(category, lists_df, "email_count", "emails", category)
+        theme.friendly_error(f"Couldn't load your {label} files", "Try refreshing the page.", e)
+    try:
+        stor = db.get_storage_info()
+    except Exception:
+        stor = None
+    render_files(category, lists_df, "email_count", "emails",
+                 stor[f"{category}_bytes"] if stor else None, cnt["rows"])
+
+    st.divider()
+    theme.section_header("04-Merges", "Merge history", "Every upload merged into a file. Revert a merge to remove the emails it added.")
+    render_merge_history(category, lists_df, "emails")
+
+    st.divider()
+    theme.section_header("05-History", "Upload history", f"Every file added to {label}.")
+    show_history(category)
 
 
 with tab_mql:

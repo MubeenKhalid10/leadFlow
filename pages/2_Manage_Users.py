@@ -69,7 +69,7 @@ for row in profiles.itertuples():
             help="You can't change your own role." if is_self else None,
         )
         if not is_self and new_role != row.role:
-            if st.button("Save role", key=f"role_save_{row.id}", type="primary",
+            if st.button("Save role", key=f"save_role_{row.id}", type="primary",
                          help=f"Make {row.email} {'an admin' if new_role == 'admin' else 'a standard user'}."):
                 try:
                     client.table("profiles").update({"role": new_role}).eq(

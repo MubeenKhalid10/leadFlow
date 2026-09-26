@@ -46,3 +46,5 @@ backups
 *credentials*
 .aws
 *.secret.json
+
+leadflow-secret.json

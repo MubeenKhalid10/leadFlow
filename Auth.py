@@ -550,7 +550,7 @@ def _render_login_form():
                 with st.form("login_form"):
                     email = st.text_input("Email", key="login_email", placeholder="you@company.com")
                     password = st.text_input("Password", type="password", key="login_password")
-                    submitted = st.form_submit_button("Log in", type="primary", width="stretch")
+                    submitted = st.form_submit_button("Log in", type="primary", width="stretch", key="go_login")
                 if submitted:
                     try:
                         client = _new_session_client()
@@ -573,7 +573,7 @@ def _render_login_form():
                         help="At least 6 characters.",
                     )
                     submitted_signup = st.form_submit_button(
-                        "Create account", type="primary", width="stretch"
+                        "Create account", type="primary", width="stretch", key="go_signup"
                     )
                 if submitted_signup:
                     try:
@@ -663,6 +663,6 @@ def render_user_badge():
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("Log out", key="_sidebar_logout"):
+            if st.button("Log out", key="logout_sidebar"):
                 log_out()
                 st.rerun()

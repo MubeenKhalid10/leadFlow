@@ -46,6 +46,8 @@ SECTION_ICONS = {
     "Add leads": "📥",
     "Add emails": "📥",
     "Your lists": "🗄️",
+    "Your files": "🗂️",
+    "Merges": "🔀",
 }
 
 # The main page's workflow, shown as a progress strip under the top bar.
@@ -1107,6 +1109,116 @@ def inject_theme():
         div[data-testid="stButton"] div.st-key-how_it_works_btn button:hover {
             background: var(--lf-primary-soft) !important;
             border-color: var(--lf-primary) !important;
+        }
+
+        /* ---------------------------------------------------------------
+           BUTTON COLOURS BY ACTION
+           A button's colour says what it does, picked by its key prefix
+           (Streamlit adds an st-key-<key> class to the button's container):
+             go_     start / continue   indigo (brand)
+             dl_     download           green
+             save_   save to database   blue
+             del_    delete             red
+             retry_  retry              amber
+             view_   preview / info     teal outline
+             reset_  clear / reset      grey outline
+             logout_ log out            soft red (sidebar)
+           Every fill keeps white text at 4.5:1 contrast or better.
+           --------------------------------------------------------------- */
+        [class*="st-key-go_"] {
+            --lf-btn-a: #4f46e5; --lf-btn-b: #6366f1; --lf-btn-glow: rgba(79, 70, 229, 0.30);
+        }
+        [class*="st-key-dl_"] {
+            --lf-btn-a: #065f46; --lf-btn-b: #047857; --lf-btn-glow: rgba(4, 120, 87, 0.30);
+        }
+        [class*="st-key-save_"] {
+            --lf-btn-a: #1d4ed8; --lf-btn-b: #2563eb; --lf-btn-glow: rgba(37, 99, 235, 0.30);
+        }
+        [class*="st-key-del_"] {
+            --lf-btn-a: #b91c1c; --lf-btn-b: #dc2626; --lf-btn-glow: rgba(220, 38, 38, 0.30);
+        }
+        [class*="st-key-retry_"] {
+            --lf-btn-a: #b45309; --lf-btn-b: #c2410c; --lf-btn-glow: rgba(180, 83, 9, 0.30);
+        }
+        [class*="st-key-view_"], .st-key-how_it_works_btn {
+            --lf-btn-a: #0e7490; --lf-btn-soft: #ecfeff;
+        }
+        [class*="st-key-reset_"] {
+            --lf-btn-a: #475569; --lf-btn-border: #94a3b8; --lf-btn-soft: #f1f5f9;
+        }
+
+        /* Filled buttons */
+        .stElementContainer:is([class*="st-key-go_"], [class*="st-key-dl_"], [class*="st-key-save_"],
+                               [class*="st-key-del_"], [class*="st-key-retry_"])
+            button[data-testid^="stBaseButton"] {
+            background: linear-gradient(135deg, var(--lf-btn-a), var(--lf-btn-b)) !important;
+            color: #ffffff !important;
+            border: 1px solid transparent !important;
+            box-shadow: 0 6px 18px var(--lf-btn-glow) !important;
+        }
+        .stElementContainer:is([class*="st-key-go_"], [class*="st-key-dl_"], [class*="st-key-save_"],
+                               [class*="st-key-del_"], [class*="st-key-retry_"])
+            button[data-testid^="stBaseButton"]:hover {
+            transform: translateY(-2px);
+            filter: brightness(1.08);
+            box-shadow: 0 12px 26px var(--lf-btn-glow) !important;
+        }
+
+        /* Outline buttons */
+        .stElementContainer:is([class*="st-key-view_"], [class*="st-key-reset_"], .st-key-how_it_works_btn)
+            button[data-testid^="stBaseButton"] {
+            background: #ffffff !important;
+            color: var(--lf-btn-a) !important;
+            border: 1.5px solid var(--lf-btn-border, var(--lf-btn-a)) !important;
+            box-shadow: none !important;
+        }
+        .stElementContainer:is([class*="st-key-view_"], [class*="st-key-reset_"], .st-key-how_it_works_btn)
+            button[data-testid^="stBaseButton"]:hover {
+            background: var(--lf-btn-soft) !important;
+            border-color: var(--lf-btn-a) !important;
+        }
+
+        /* Log out, on the dark sidebar */
+        [data-testid="stSidebar"] .stElementContainer[class*="st-key-logout_"] button[data-testid^="stBaseButton"] {
+            background: rgba(239, 68, 68, 0.14) !important;
+            color: #fecaca !important;
+            border: 1px solid rgba(248, 113, 113, 0.45) !important;
+        }
+        [data-testid="stSidebar"] .stElementContainer[class*="st-key-logout_"] button[data-testid^="stBaseButton"]:hover {
+            background: rgba(239, 68, 68, 0.28) !important;
+            color: #ffffff !important;
+            border-color: rgba(248, 113, 113, 0.7) !important;
+        }
+
+        /* Labels take the button's own text colour. Without this, the page-wide
+           text rules (main area and sidebar) recolour the <p> inside each button,
+           which left "Log in" dark-on-indigo and "Log out" grey-on-navy. */
+        :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
+            button[data-testid^="stBaseButton"] * {
+            color: inherit !important;
+        }
+
+        /* Form submit buttons (Log in, Create account) use the brand fill like other primaries. */
+        [data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"] {
+            background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
+            color: #ffffff !important;
+            border: 1px solid transparent !important;
+            border-radius: 10px !important;
+            font-weight: 700 !important;
+            box-shadow: var(--lf-shadow-primary) !important;
+        }
+
+        /* Disabled: plainly grey but still readable, whatever the action colour. */
+        .stElementContainer :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
+            button[data-testid^="stBaseButton"]:disabled {
+            background: #e5e7eb !important;
+            color: #4b5563 !important;
+            border: 1px solid #d1d5db !important;
+            box-shadow: none !important;
+            transform: none !important;
+            filter: none !important;
+            opacity: 1 !important;
+            cursor: not-allowed !important;
         }
 
         /* ---------------------------------------------------------------

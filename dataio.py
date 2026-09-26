@@ -7,6 +7,7 @@ auto-detection and column mapping. Shared by the main cleaning page and the
 Manage Suppression Database page so both parse uploads identically.
 """
 
+import codecs
 import gzip
 import re
 import zipfile
@@ -120,6 +121,21 @@ def validate_upload(file):
     return None
 
 
+def _is_valid_utf8(file, chunk_size=1 << 20):
+    """True if the whole upload decodes as UTF-8. Streams it in chunks, keeping nothing."""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    file.seek(0)
+    try:
+        while chunk := file.read(chunk_size):
+            decoder.decode(chunk)
+        decoder.decode(b"", final=True)
+        return True
+    except UnicodeDecodeError:
+        return False
+    finally:
+        file.seek(0)
+
+
 def load_file_internal(file):
     """Load CSV, XLSX, XLS, or ZIP/GZ archives with memory-efficient parsing."""
     filename = file.name.lower()
@@ -138,7 +154,7 @@ def load_file_internal(file):
                             inner_f.seek(0)
                             return pd.read_csv(inner_f, encoding="latin1", encoding_errors="replace", low_memory=False)
                     else:
-                        return pd.read_excel(inner_f)
+                        return pd.read_excel(inner_f, engine="calamine")
 
         elif filename.endswith((".gz", ".gzip")):
             try:
@@ -149,6 +165,9 @@ def load_file_internal(file):
 
         elif filename.endswith(".csv"):
             encodings_to_try = ["utf-8", "utf-8-sig", "cp1252", "latin1"]
+            if not _is_valid_utf8(file):
+                # Both UTF-8 attempts would fail, but only after parsing most of the file.
+                encodings_to_try = ["cp1252", "latin1"]
             for enc in encodings_to_try:
                 try:
                     file.seek(0)
@@ -160,11 +179,12 @@ def load_file_internal(file):
 
         elif filename.endswith(".xlsx"):
             file.seek(0)
-            return pd.read_excel(file, engine="openpyxl")
+            # calamine reads the same values as openpyxl, several times faster.
+            return pd.read_excel(file, engine="calamine")
 
         elif filename.endswith(".xls"):
             file.seek(0)
-            return pd.read_excel(file, engine="xlrd")
+            return pd.read_excel(file, engine="calamine")
 
         else:
             raise ValueError(f"Unsupported file format: {file.name}. Please upload CSV, XLSX, XLS, ZIP, or GZ.")
@@ -186,14 +206,24 @@ def load_file_internal(file):
         raise ValueError(f"Could not read file '{file.name}': {e}")
 
 
+def _file_cache_key(file):
+    return f"_df_cache_{getattr(file, 'name', '')}_{getattr(file, 'size', 0)}"
+
+
 def load_file(file):
     """Zero-overhead cached loader using file identity to prevent memory hashing spikes."""
     if file is None:
         return None
-    cache_key = f"_df_cache_{getattr(file, 'name', '')}_{getattr(file, 'size', 0)}"
+    cache_key = _file_cache_key(file)
     if cache_key not in st.session_state:
         st.session_state[cache_key] = load_file_internal(file)
     return st.session_state[cache_key]
+
+
+def forget_file(file):
+    """Drop a file's cached DataFrame once it has been processed (it is re-read if needed)."""
+    if file is not None:
+        st.session_state.pop(_file_cache_key(file), None)
 
 
 def get_email_series(df, mapping):

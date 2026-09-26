@@ -36,3 +36,7 @@ backups/
 
 # AWS Secrets Manager payloads built locally — delete after upload
 *.secret.json
+leadflow-secret.json
+
+# Local AWS ECS task-definition artifacts
+leadflow-task-*.json

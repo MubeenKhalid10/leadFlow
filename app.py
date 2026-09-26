@@ -19,6 +19,7 @@ Master/Bounce suppression data lives in PostgreSQL (see db.py) and is managed on
 the "Manage Suppression Database" page — it is no longer uploaded on each run.
 """
 
+import codecs
 import html
 import io
 import json
@@ -32,6 +33,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+import xlsxwriter
 
 import db
 import theme
@@ -389,11 +391,25 @@ def load_country_reference(json_path_str):
         for k, v in city_alias_overrides.items()
     }
 
+    # Built once here (this function is cached) for the city fallback in
+    # classify_country_from_location. City keys are space-separated [a-z0-9] tokens, so a
+    # boundary-aware match inside a part is exactly a run of whole tokens equal to the key.
+    # The rank keeps city_to_countries order, so the first matching city stays the same.
+    city_rank = {
+        city_key: (rank, countries_set)
+        for rank, (city_key, countries_set) in enumerate(
+            (k, v) for k, v in city_to_countries.items() if len(k) >= 4
+        )
+    }
+    max_city_tokens = max((len(k.split()) for k in city_rank), default=0)
+
     return {
         "country_name_lookup": country_name_lookup,
         "alias_lookup": alias_lookup,
         "city_to_countries": city_to_countries,
         "city_alias_lookup": city_alias_lookup,
+        "city_rank": city_rank,
+        "max_city_tokens": max_city_tokens,
     }
 
 
@@ -462,12 +478,18 @@ def classify_country_from_location(location_text, country_ref):
         if not matched_countries:
             # Boundary-aware phrase match: e.g. "san francisco bay area" →
             # "san francisco", while avoiding loose partial-fragment matches.
-            for city_key, countries_set in city_to_countries.items():
-                if len(city_key) < 4:
-                    continue
-                if re.search(rf"(?<![a-z0-9]){re.escape(city_key)}(?![a-z0-9])", part):
-                    matched_countries = countries_set
-                    break
+            # Looks up every run of whole tokens instead of scanning every city; the
+            # lowest-ranked hit is the city the full scan would have found first.
+            city_rank = country_ref["city_rank"]
+            tokens = part.split()
+            best = None
+            for size in range(1, min(len(tokens), country_ref["max_city_tokens"]) + 1):
+                for start in range(len(tokens) - size + 1):
+                    hit = city_rank.get(" ".join(tokens[start:start + size]))
+                    if hit and (best is None or hit[0] < best[0]):
+                        best = hit
+            if best:
+                matched_countries = best[1]
         if matched_countries:
             # Return immediately on first city hit (deterministic left-to-right)
             if len(matched_countries) == 1:
@@ -561,6 +583,21 @@ def validate_upload(file):
 
     return None
 
+def _is_valid_utf8(file, chunk_size=1 << 20):
+    """True if the whole upload decodes as UTF-8. Streams it in chunks, keeping nothing."""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    file.seek(0)
+    try:
+        while chunk := file.read(chunk_size):
+            decoder.decode(chunk)
+        decoder.decode(b"", final=True)
+        return True
+    except UnicodeDecodeError:
+        return False
+    finally:
+        file.seek(0)
+
+
 def load_file_internal(file):
     """Load CSV, XLSX, XLS, or ZIP/GZ archives with memory-efficient parsing."""
     filename = file.name.lower()
@@ -579,7 +616,7 @@ def load_file_internal(file):
                             inner_f.seek(0)
                             return pd.read_csv(inner_f, encoding="latin1", encoding_errors="replace", low_memory=False)
                     else:
-                        return pd.read_excel(inner_f)
+                        return pd.read_excel(inner_f, engine="calamine")
 
         elif filename.endswith((".gz", ".gzip")):
             try:
@@ -590,6 +627,9 @@ def load_file_internal(file):
 
         elif filename.endswith(".csv"):
             encodings_to_try = ["utf-8", "utf-8-sig", "cp1252", "latin1"]
+            if not _is_valid_utf8(file):
+                # Both UTF-8 attempts would fail, but only after parsing most of the file.
+                encodings_to_try = ["cp1252", "latin1"]
             for enc in encodings_to_try:
                 try:
                     file.seek(0)
@@ -601,11 +641,12 @@ def load_file_internal(file):
 
         elif filename.endswith(".xlsx"):
             file.seek(0)
-            return pd.read_excel(file, engine="openpyxl")
+            # calamine reads the same values as openpyxl, several times faster.
+            return pd.read_excel(file, engine="calamine")
 
         elif filename.endswith(".xls"):
             file.seek(0)
-            return pd.read_excel(file, engine="xlrd")
+            return pd.read_excel(file, engine="calamine")
 
         else:
             raise ValueError(f"Unsupported file format: {file.name}. Please upload CSV, XLSX, XLS, ZIP, or GZ.")
@@ -634,7 +675,24 @@ def load_file(file):
     cache_key = f"_df_cache_{getattr(file, 'name', '')}_{getattr(file, 'size', 0)}"
     if cache_key not in st.session_state:
         st.session_state[cache_key] = load_file_internal(file)
+    # Only the active raw file needs to stay in memory; release the one it replaced.
+    prev_key = st.session_state.get("_raw_df_cache_key")
+    if prev_key != cache_key:
+        if prev_key:
+            st.session_state.pop(prev_key, None)
+        st.session_state["_raw_df_cache_key"] = cache_key
     return st.session_state[cache_key]
+
+
+def validate_active_upload(file):
+    """validate_upload() for the active raw file, remembered per upload: the answer can't
+    change between reruns, and for .gz files each check decompresses the whole archive."""
+    key = (getattr(file, "file_id", None), file.name, get_upload_size(file))
+    cached = st.session_state.get("_active_upload_check")
+    if not cached or cached[0] != key:
+        cached = (key, validate_upload(file))
+        st.session_state["_active_upload_check"] = cached
+    return cached[1]
 
 
 def get_email_series(df, mapping):
@@ -656,6 +714,44 @@ def csv_bytes(df):
     return lambda: df.to_csv(index=False).encode("utf-8")
 
 
+def xlsx_bytes(df):
+    """The XLSX file pandas + openpyxl would write, built row by row with XlsxWriter (~2.5x faster).
+
+    Text is stored with openpyxl's rule (a value starting with "=" and longer than one
+    character becomes a formula) and missing values stay empty. Anything other than text
+    or a missing value goes through the original pandas + openpyxl writer unchanged.
+    """
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"strings_to_urls": False, "constant_memory": True})
+    ws = wb.add_worksheet("Sheet1")
+
+    def put(r, c, v):
+        if len(v) > 1 and v.startswith("="):
+            ws.write_formula(r, c, v)
+        else:
+            ws.write_string(r, c, v)
+
+    plain = all(isinstance(c, str) for c in df.columns)
+    if plain:
+        for c, name in enumerate(df.columns):
+            put(0, c, name)
+        for r, row in enumerate(df.itertuples(index=False, name=None), start=1):
+            for c, v in enumerate(row):
+                if isinstance(v, str):
+                    put(r, c, v)
+                elif not (v is None or v is pd.NA or (isinstance(v, float) and v != v)):
+                    plain = False
+                    break
+            if not plain:
+                break
+    wb.close()
+    if plain:
+        return buf.getvalue()
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue()
+
+
 def make_download(df, fmt, base_name):
     """Return (data_callable, file_name, mime) for the requested format ('csv', 'xlsx', 'zip')."""
     if fmt == "zip":
@@ -666,11 +762,7 @@ def make_download(df, fmt, base_name):
             return buf.getvalue()
         return _build, f"{base_name}.zip", "application/zip"
     if fmt == "xlsx":
-        def _build():
-            buf = io.BytesIO()
-            df.to_excel(buf, index=False, engine="openpyxl")
-            return buf.getvalue()
-        return _build, f"{base_name}.xlsx", XLSX_MIME
+        return (lambda: xlsx_bytes(df)), f"{base_name}.xlsx", XLSX_MIME
     return csv_bytes(df), f"{base_name}.csv", "text/csv"
 
 
@@ -695,6 +787,14 @@ def remove_downloaded_leads(downloaded_df, reset_keys=(), label="your selection"
     # Build every new value first and only then swap them in, so a failure part-way
     # leaves the Final Campaign exactly as it was.
     new_final = final_df[keep].reset_index(drop=True)
+    old_token = st.session_state.get("run_token")
+    new_token = uuid.uuid4().hex
+    # Removing rows doesn't change whether the remaining leads are already in a Master
+    # list, so the Save-to-Master preview is kept (re-aligned) instead of re-querying.
+    dedup = st.session_state.get("_dedup_preview")
+    new_dedup = None
+    if dedup and dedup.get("key") == old_token and len(dedup["new_mask"]) == len(final_df):
+        new_dedup = {"key": new_token, "new_mask": pd.Series(dedup["new_mask"].to_numpy()[keep])}
     country_series = st.session_state.get("country_series")
     new_country = None
     if country_series is not None and len(country_series) == len(final_df):
@@ -705,8 +805,10 @@ def remove_downloaded_leads(downloaded_df, reset_keys=(), label="your selection"
         st.session_state["country_series"] = new_country
         st.session_state["country_counts"] = new_country.value_counts().to_dict()
     # Row positions changed, so masks cached against the old frame are stale.
-    st.session_state["run_token"] = uuid.uuid4().hex
+    st.session_state["run_token"] = new_token
     st.session_state.pop("_dedup_preview", None)
+    if new_dedup is not None:
+        st.session_state["_dedup_preview"] = new_dedup
     for k in reset_keys:
         st.session_state[k] = False
     # Shown once, above the download tabs, on the rerun this click triggers.
@@ -828,7 +930,7 @@ else:
     st.caption("Tick a list to exclude it; pick specific lists in the box below it. "
                "Admins manage these lists on the **Database** page.")
 
-if st.button("📤  Use this file", type="primary",
+if st.button("📤  Use this file", type="primary", key="go_use_file",
              help="Loads your file so you can check its columns before cleaning."):
     upload_error = validate_upload(raw_file_selected) if raw_file_selected is not None else None
     if raw_file_selected is None:
@@ -841,7 +943,7 @@ if st.button("📤  Use this file", type="primary",
 
 active_raw_file = st.session_state.get("active_raw_file")
 if active_raw_file is not None:
-    upload_error = validate_upload(active_raw_file)
+    upload_error = validate_active_upload(active_raw_file)
     if upload_error:
         st.error(upload_error)
         st.stop()
@@ -950,7 +1052,7 @@ if active_raw_file is not None:
     # Conditional output goes into fixed container slots throughout this page: Streamlit keys
     # widgets and tabs by position, so an element that only appears on some reruns would
     # otherwise reset everything below it (e.g. bounce the Download tabs back to the first tab).
-    _clean_clicked = st.button("🧹  Clean my leads", type="primary",
+    _clean_clicked = st.button("🧹  Clean my leads", type="primary", key="go_clean",
                                help="Runs every cleaning step. Your original file is not changed.")
     _clean_area = st.container()
     if _clean_clicked:
@@ -1036,20 +1138,17 @@ if active_raw_file is not None:
             before = len(std)
             std = std[~any_special_mask].reset_index(drop=True)
 
-            # Fast vectorized C-regex cleaning of non-email text in remaining rows
+            # Tidy whitespace in the remaining rows' non-email text. Every row with a special
+            # character in any field was just moved to the audit file, so there are none
+            # left to strip here.
             cleanable_columns = [c for c in FINAL_COLUMNS if c != "Email" and c in std.columns]
-            rows_changed_after_clean = 0
             for col in cleanable_columns:
-                has_special = std[col].str.contains(SPECIAL_CHARS_COUNT_PATTERN, regex=True, na=False)
-                if has_special.any():
-                    rows_changed_after_clean += int(has_special.sum())
-                std[col] = std[col].str.replace(SPECIAL_CHARS_COUNT_PATTERN, "", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
+                std[col] = std[col].str.replace(r"\s+", " ", regex=True).str.strip()
 
             report.append(
                 f"Step 4 - Separated special-character rows into audit file: {before - len(std):,} rows removed from final output "
                 f"({rows_with_special_chars_email:,} emails had special characters)"
                 # f"{total_special_chars_email:,} special characters found in Email field total). "
-                # f"Then cleaned non-email text fields in remaining rows: {rows_changed_after_clean:,} rows cleaned"
             )
             del any_special_mask, field_masks, email_special_mask
             gc.collect()
@@ -1062,16 +1161,19 @@ if active_raw_file is not None:
             std = std.drop_duplicates(subset="__email_lower", keep="first").reset_index(drop=True)
             report.append(f"Step 5 - Removed in-file duplicates: {duplicate_count:,} duplicate rows removed")
 
+            # One upload of the emails serves every list check in steps 6–7c; each check
+            # only looks at the emails the earlier checks left (nothing is sent until needed).
+            _probe = db.EmailProbe(std["__email_lower"].tolist())
+
             # ---- STEP 6: Remove records already in selected Master list(s) ----
             if db_is_ready() and selected_master_list_ids:
                 try:
                     _clean_status.update(label="Checking against your Master leads…")
                     with st.spinner("Checking against your Master leads…"):
                         # Server-side lookup: only the emails that match come back.
-                        master_emails = db.find_existing_master_emails(
-                            std["__email_lower"].tolist(), selected_master_list_ids
-                        )
+                        master_emails = _probe.take_master(selected_master_list_ids)
                 except Exception as e:
+                    _probe.close()
                     _clean_status.update(label="Cleaning stopped", state="error", expanded=True)
                     theme.friendly_error(
                         "Couldn't check your Master leads",
@@ -1098,10 +1200,9 @@ if active_raw_file is not None:
                 try:
                     _clean_status.update(label="Checking against your Bounced list…")
                     with st.spinner("Checking against your Bounced list…"):
-                        bounce_emails = db.find_existing_bounce_emails(
-                            std["__email_lower"].tolist(), selected_bounce_list_ids
-                        )
+                        bounce_emails = _probe.take("bounce", selected_bounce_list_ids)
                 except Exception as e:
+                    _probe.close()
                     _clean_status.update(label="Cleaning stopped", state="error", expanded=True)
                     theme.friendly_error(
                         "Couldn't check your Bounced list",
@@ -1132,8 +1233,9 @@ if active_raw_file is not None:
                     try:
                         _clean_status.update(label=f"Checking against your {_label} list…")
                         with st.spinner(f"Checking against your {_label} list…"):
-                            _hits = db.find_existing_emails(_cat, std["__email_lower"].tolist(), _ids)
+                            _hits = _probe.take(_cat, _ids)
                     except Exception as e:
+                        _probe.close()
                         _clean_status.update(label="Cleaning stopped", state="error", expanded=True)
                         theme.friendly_error(
                             f"Couldn't check your {_label} list",
@@ -1155,6 +1257,7 @@ if active_raw_file is not None:
                 else:
                     report.append(f"Step {_step} - No {_label} list selected, step skipped")
 
+            _probe.close()
             std = std.drop(columns="__email_lower")
 
             # ---- STEP 8: Arrange final column sequence ----
@@ -1313,6 +1416,152 @@ if active_raw_file is not None:
             )
             st.caption("✔ Checked: no duplicate or blank emails — ready to upload into your campaign tool.")
 
+            # Saving lives with the full campaign file it saves.
+            section_header(
+                "07-Save", "Save to your lead database",
+                "Optional. Add these clean leads to a Master list so they're automatically skipped next time. "
+                "Leads already saved in any Master list are never added twice.",
+            )
+            if not db_is_ready():
+                st.warning(
+                    "The lead database isn't connected, so leads can't be saved right now. "
+                    "See the message at the top of the page."
+                )
+            else:
+                final_df = st.session_state["cleaned_df"]
+                try:
+                    existing_master = db.get_master_lists()
+                    existing_names = existing_master["name"].tolist() if not existing_master.empty else []
+                except Exception as e:
+                    existing_master = pd.DataFrame()
+                    existing_names = []
+                    st.warning("Couldn't load your Master lists. You can still create a new one.")
+                    st.caption(f"Technical details: {type(e).__name__}: {e}")
+
+                new_list_label = "➕ Create a new list…"
+                save_choice = st.selectbox(
+                    "Save into which Master list?",
+                    [new_list_label] + existing_names,
+                    key="save_master_choice",
+                    help="Pick an existing list to add to, or create a new one.",
+                )
+                if save_choice == new_list_label:
+                    target_name = st.text_input(
+                        "New Master list name",
+                        value=f"Cleaned {pd.Timestamp.now():%Y-%m-%d}",
+                        key="save_master_newname",
+                    )
+                else:
+                    target_name = save_choice
+
+                clean_target = (target_name or "").strip()
+
+                # --- Global dedup preview -------------------------------------------
+                # Before saving, compute how many emails are truly new vs already stored
+                # in ANY master list (not just the target list).
+                try:
+                    # Only recompute when the cleaned results change (new run) or after a save.
+                    # The lookup runs server-side so only matching emails are transferred.
+                    _dedup_key = st.session_state.get("run_token")
+                    _dedup_cache = st.session_state.get("_dedup_preview")
+                    if not _dedup_cache or _dedup_cache.get("key") != _dedup_key:
+                        emails_in_final = final_df["Email"].astype(str).str.lower().str.strip()
+                        _all_list_ids = set(int(i) for i in existing_master["id"].tolist()) if not existing_master.empty else set()
+                        _suppressed_ids = st.session_state.get("master_suppressed_list_ids")
+                        if _suppressed_ids is not None and _all_list_ids and _all_list_ids <= set(_suppressed_ids):
+                            # Step 6 already removed every email present in any master list — nothing to look up.
+                            new_mask = pd.Series(True, index=final_df.index)
+                        else:
+                            with st.spinner("Checking for existing emails in all master lists…"):
+                                existing_emails = db.find_existing_master_emails(emails_in_final.tolist())
+                            new_mask = ~emails_in_final.isin(existing_emails)
+                        _dedup_cache = {"key": _dedup_key, "new_mask": new_mask}
+                        st.session_state["_dedup_preview"] = _dedup_cache
+                    new_mask = _dedup_cache["new_mask"]
+                    new_count = int(new_mask.sum())
+                    already_count = int(len(final_df) - new_count)
+
+                    dedup_col1, dedup_col2 = st.columns(2)
+                    dedup_col1.metric(
+                        "✅ New leads to save",
+                        f"{new_count:,}",
+                        help="These emails are not yet in any master list and will be added.",
+                    )
+                    dedup_col2.metric(
+                        "⏭️ Already saved (will be skipped)",
+                        f"{already_count:,}",
+                        help="These emails already exist in at least one master list and will be skipped.",
+                    )
+
+                    if new_count == 0:
+                        st.info(
+                            "ℹ️ All cleaned contacts already exist in your master lists. "
+                            "Nothing new will be saved."
+                        )
+                    elif already_count > 0:
+                        st.markdown(
+                            f'<div class="lf-dedup-box warn">'
+                            f'⚠️ <strong>{already_count:,}</strong> email(s) already stored across all master lists '
+                            f'— only the <strong>{new_count:,}</strong> new contacts will be added to '
+                            f'<strong>{clean_target or "—"}</strong>.'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f'<div class="lf-dedup-box">'
+                            f'✅ All <strong>{new_count:,}</strong> contacts are new — '
+                            f'none of them exist in any master list yet.'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                except Exception as e:
+                    st.warning("Couldn't check which leads are already saved. Saving will still skip duplicates.")
+                    st.caption(f"Technical details: {type(e).__name__}: {e}")
+                    new_count = len(final_df)
+                    new_mask = pd.Series([True] * len(final_df), index=final_df.index)
+
+                if st.button(
+                    f"💾 Save {new_count:,} new leads to Master",
+                    type="primary",
+                    key="save_to_master_btn",
+                    disabled=(new_count == 0),
+                ):
+                    if not clean_target:
+                        st.error("Please enter a name for the new Master list.")
+                    else:
+                        try:
+                            # Only pass the truly new contacts (global dedup applied)
+                            new_df = final_df[new_mask].copy()
+                            with st.spinner(f"Saving {new_count:,} new contacts to '{clean_target}'…"):
+                                records = cleaned_df_to_records(new_df)
+                                list_id = db.get_or_create_master_list(clean_target)
+                                written = db.upsert_master_contacts(
+                                    list_id, records,
+                                    upload=dict(
+                                        file_name=f"{getattr(active_raw_file, 'name', 'Cleaned leads')} (cleaned in LeadFlow)",
+                                        file_size_bytes=get_upload_size(active_raw_file) if active_raw_file is not None else None,
+                                        rows_in_file=len(final_df), rows_skipped=len(final_df) - new_count,
+                                        list_name=clean_target, uploaded_by=(auth.current_user() or {}).get("email"),
+                                    ),
+                                )
+                            # Master data changed: refresh the dedup preview on the next rerun,
+                            # and stop trusting the "already suppressed against all lists" shortcut.
+                            st.session_state.pop("_dedup_preview", None)
+                            st.session_state.pop("master_suppressed_list_ids", None)
+                            st.success(
+                                f"**Saved!** {written:,} new leads were added to Master list "
+                                f"'{clean_target}'. They'll be skipped automatically in future runs.",
+                                icon="✅",
+                            )
+                            st.balloons()
+                        except Exception as e:
+                            theme.friendly_error(
+                                "Your leads couldn't be saved",
+                                "Please try again. If it keeps happening, the lead database may be unavailable.",
+                                e,
+                            )
+
         if tab_country is not None:
             with tab_country:
                 st.caption(
@@ -1373,21 +1622,29 @@ if active_raw_file is not None:
                     "they're downloaded together as one file."
                 )
 
-                # Determine the best column to split by:
-                # Priority: mapped Industry column → any non-empty column in cleaned df
-                industry_col_in_df = "Industry" if (
-                    "Industry" in final_df.columns
-                    and not (final_df["Industry"].astype(str).str.strip() == "").all()
-                ) else None
+                # Scanning every column is slow on big files, so it's redone only when the
+                # Final Campaign itself changes (new cleaning run or a split download).
+                _cols_cache = st.session_state.get("_split_cols_cache")
+                if not _cols_cache or _cols_cache["src"] is not final_df:
+                    # Determine the best column to split by:
+                    # Priority: mapped Industry column → any non-empty column in cleaned df
+                    industry_col_in_df = "Industry" if (
+                        "Industry" in final_df.columns
+                        and not (final_df["Industry"].astype(str).str.strip() == "").all()
+                    ) else None
 
-                # Collect all columns that have at least some non-blank values for user to pick from
-                # Exclude personal/identifier columns that don't make sense as split-by groups
-                _exclude_from_split = {"First Name", "Last Name", "Email"}
-                splittable_cols = [
-                    c for c in final_df.columns
-                    if c not in _exclude_from_split
-                    and not (final_df[c].astype(str).str.strip() == "").all()
-                ]
+                    # Collect all columns that have at least some non-blank values for user to pick from
+                    # Exclude personal/identifier columns that don't make sense as split-by groups
+                    _exclude_from_split = {"First Name", "Last Name", "Email"}
+                    splittable_cols = [
+                        c for c in final_df.columns
+                        if c not in _exclude_from_split
+                        and not (final_df[c].astype(str).str.strip() == "").all()
+                    ]
+                    _cols_cache = {"src": final_df, "industry": industry_col_in_df, "cols": splittable_cols}
+                    st.session_state["_split_cols_cache"] = _cols_cache
+                industry_col_in_df = _cols_cache["industry"]
+                splittable_cols = list(_cols_cache["cols"])
 
                 if final_df.empty:
                     theme.empty_state("🎉", "No leads left to split", "Every lead has already been downloaded or removed.")
@@ -1469,7 +1726,7 @@ if active_raw_file is not None:
 
                     clear_col.button(
                         "Clear all",
-                        key=f"split_clear_{safe_col}",
+                        key=f"reset_split_{safe_col}",
                         on_click=_on_clear_selection,
                         disabled=not st.session_state.get(sel_key),
                         help="Unticks every group, including ones hidden by your search.",
@@ -1590,20 +1847,26 @@ if active_raw_file is not None:
                 )
                 st.caption("This file contains the rows exactly as they were in your upload, odd characters included.")
 
-                # Build cleaned version: strip special chars from all non-email columns
-                _audit_cleanable_cols = [c for c in FINAL_COLUMNS if c != "Email" and c in special_chars_df.columns]
-                special_chars_cleaned_df = special_chars_df.drop(
-                    columns=[c for c in ["Matched Fields"] if c in special_chars_df.columns],
-                    errors="ignore",
-                ).copy()
-                for _col in _audit_cleanable_cols:
-                    special_chars_cleaned_df[_col] = (
-                        special_chars_cleaned_df[_col]
-                        .astype(str)
-                        .str.replace(SPECIAL_CHARS_COUNT_PATTERN, "", regex=True)
-                        .str.replace(r"\s+", " ", regex=True)
-                        .str.strip()
-                    )
+                # Build cleaned version: strip special chars from all non-email columns.
+                # Cached against the audit frame, which only changes on a new cleaning run.
+                _audit_cache = st.session_state.get("_special_chars_cleaned_cache")
+                if not _audit_cache or _audit_cache["src"] is not special_chars_df:
+                    _audit_cleanable_cols = [c for c in FINAL_COLUMNS if c != "Email" and c in special_chars_df.columns]
+                    special_chars_cleaned_df = special_chars_df.drop(
+                        columns=[c for c in ["Matched Fields"] if c in special_chars_df.columns],
+                        errors="ignore",
+                    ).copy()
+                    for _col in _audit_cleanable_cols:
+                        special_chars_cleaned_df[_col] = (
+                            special_chars_cleaned_df[_col]
+                            .astype(str)
+                            .str.replace(SPECIAL_CHARS_COUNT_PATTERN, "", regex=True)
+                            .str.replace(r"\s+", " ", regex=True)
+                            .str.strip()
+                        )
+                    _audit_cache = {"src": special_chars_df, "out": special_chars_cleaned_df}
+                    st.session_state["_special_chars_cleaned_cache"] = _audit_cache
+                special_chars_cleaned_df = _audit_cache["out"]
 
                 st.markdown("**Cleaned preview** — same rows after removing special characters from non-email fields:")
                 st.dataframe(special_chars_cleaned_df.head(20), width="stretch")
@@ -1632,142 +1895,6 @@ if active_raw_file is not None:
                     type="primary",
                 )
 
-        section_header(
-            "07-Save", "Save to your lead database",
-            "Optional. Add these clean leads to a Master list so they're automatically skipped next time. "
-            "Leads already saved in any Master list are never added twice.",
-        )
-        if not db_is_ready():
-            st.warning(
-                "The lead database isn't connected, so leads can't be saved right now. "
-                "See the message at the top of the page."
-            )
-        else:
-            final_df = st.session_state["cleaned_df"]
-            try:
-                existing_master = db.get_master_lists()
-                existing_names = existing_master["name"].tolist() if not existing_master.empty else []
-            except Exception as e:
-                existing_master = pd.DataFrame()
-                existing_names = []
-                st.warning("Couldn't load your Master lists. You can still create a new one.")
-                st.caption(f"Technical details: {type(e).__name__}: {e}")
-
-            new_list_label = "➕ Create a new list…"
-            save_choice = st.selectbox(
-                "Save into which Master list?",
-                [new_list_label] + existing_names,
-                key="save_master_choice",
-                help="Pick an existing list to add to, or create a new one.",
-            )
-            if save_choice == new_list_label:
-                target_name = st.text_input(
-                    "New Master list name",
-                    value=f"Cleaned {pd.Timestamp.now():%Y-%m-%d}",
-                    key="save_master_newname",
-                )
-            else:
-                target_name = save_choice
-
-            clean_target = (target_name or "").strip()
-
-            # --- Global dedup preview -------------------------------------------
-            # Before saving, compute how many emails are truly new vs already stored
-            # in ANY master list (not just the target list).
-            try:
-                # Only recompute when the cleaned results change (new run) or after a save.
-                # The lookup runs server-side so only matching emails are transferred.
-                _dedup_key = st.session_state.get("run_token")
-                _dedup_cache = st.session_state.get("_dedup_preview")
-                if not _dedup_cache or _dedup_cache.get("key") != _dedup_key:
-                    emails_in_final = final_df["Email"].astype(str).str.lower().str.strip()
-                    _all_list_ids = set(int(i) for i in existing_master["id"].tolist()) if not existing_master.empty else set()
-                    _suppressed_ids = st.session_state.get("master_suppressed_list_ids")
-                    if _suppressed_ids is not None and _all_list_ids and _all_list_ids <= set(_suppressed_ids):
-                        # Step 6 already removed every email present in any master list — nothing to look up.
-                        new_mask = pd.Series(True, index=final_df.index)
-                    else:
-                        with st.spinner("Checking for existing emails in all master lists…"):
-                            existing_emails = db.find_existing_master_emails(emails_in_final.tolist())
-                        new_mask = ~emails_in_final.isin(existing_emails)
-                    _dedup_cache = {"key": _dedup_key, "new_mask": new_mask}
-                    st.session_state["_dedup_preview"] = _dedup_cache
-                new_mask = _dedup_cache["new_mask"]
-                new_count = int(new_mask.sum())
-                already_count = int(len(final_df) - new_count)
-
-                dedup_col1, dedup_col2 = st.columns(2)
-                dedup_col1.metric(
-                    "✅ New leads to save",
-                    f"{new_count:,}",
-                    help="These emails are not yet in any master list and will be added.",
-                )
-                dedup_col2.metric(
-                    "⏭️ Already saved (will be skipped)",
-                    f"{already_count:,}",
-                    help="These emails already exist in at least one master list and will be skipped.",
-                )
-
-                if new_count == 0:
-                    st.info(
-                        "ℹ️ All cleaned contacts already exist in your master lists. "
-                        "Nothing new will be saved."
-                    )
-                elif already_count > 0:
-                    st.markdown(
-                        f'<div class="lf-dedup-box warn">'
-                        f'⚠️ <strong>{already_count:,}</strong> email(s) already stored across all master lists '
-                        f'— only the <strong>{new_count:,}</strong> new contacts will be added to '
-                        f'<strong>{clean_target or "—"}</strong>.'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        f'<div class="lf-dedup-box">'
-                        f'✅ All <strong>{new_count:,}</strong> contacts are new — '
-                        f'none of them exist in any master list yet.'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-            except Exception as e:
-                st.warning("Couldn't check which leads are already saved. Saving will still skip duplicates.")
-                st.caption(f"Technical details: {type(e).__name__}: {e}")
-                new_count = len(final_df)
-                new_mask = pd.Series([True] * len(final_df), index=final_df.index)
-
-            if st.button(
-                f"💾 Save {new_count:,} new leads to Master",
-                type="primary",
-                key="save_to_master_btn",
-                disabled=(new_count == 0),
-            ):
-                if not clean_target:
-                    st.error("Please enter a name for the new Master list.")
-                else:
-                    try:
-                        # Only pass the truly new contacts (global dedup applied)
-                        new_df = final_df[new_mask].copy()
-                        with st.spinner(f"Saving {new_count:,} new contacts to '{clean_target}'…"):
-                            records = cleaned_df_to_records(new_df)
-                            list_id = db.get_or_create_master_list(clean_target)
-                            written = db.upsert_master_contacts(list_id, records)
-                        # Master data changed: refresh the dedup preview on the next rerun,
-                        # and stop trusting the "already suppressed against all lists" shortcut.
-                        st.session_state.pop("_dedup_preview", None)
-                        st.session_state.pop("master_suppressed_list_ids", None)
-                        st.success(
-                            f"**Saved!** {written:,} new leads were added to Master list "
-                            f"'{clean_target}'. They'll be skipped automatically in future runs.",
-                            icon="✅",
-                        )
-                        st.balloons()
-                    except Exception as e:
-                        theme.friendly_error(
-                            "Your leads couldn't be saved",
-                            "Please try again. If it keeps happening, the lead database may be unavailable.",
-                            e,
-                        )
 else:
     theme.empty_state(
         "📂", "No leads uploaded yet",
