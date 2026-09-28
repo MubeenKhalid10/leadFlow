@@ -47,6 +47,7 @@ SECTION_ICONS = {
     "Add emails": "📥",
     "Your lists": "🗄️",
     "Your files": "🗂️",
+    "Team": "👥",
     "Merges": "🔀",
 }
 
@@ -234,6 +235,20 @@ def empty_state(icon, title, text=""):
         + "</div>",
         unsafe_allow_html=True,
     )
+
+
+def card(key):
+    """Solid, bordered container for one page section: `with theme.card("upload"): ...`.
+
+    Just a keyed st.container; its look comes from the st-key-lf_card_ rule in inject_theme().
+    Keys must be unique on a page.
+    """
+    return st.container(key=f"lf_card_{key}")
+
+
+def subcard(key):
+    """Lightly tinted group inside a card, for related controls that belong together."""
+    return st.container(key=f"lf_subcard_{key}")
 
 
 def friendly_error(title, message, error=None):
@@ -1610,6 +1625,66 @@ def inject_theme():
             .lf-step-label { font-size: 0.82rem; white-space: nowrap; }
             .lf-step-dot { width: 26px; height: 26px; font-size: 0.78rem; }
             .lf-step-line { min-width: 0.4rem; }
+        }
+
+        /* ---------------------------------------------------------------
+           SECTION CARDS (theme.card / theme.subcard)
+           Each workflow section sits on its own solid card so sections read
+           as separate blocks; related controls inside a section can share a
+           tinted sub-card.
+           --------------------------------------------------------------- */
+        div[class*="st-key-lf_card_"] {
+            background: var(--lf-surface);
+            border: 1px solid var(--lf-border);
+            border-radius: var(--lf-radius);
+            padding: 0.35rem 1.6rem 1.5rem;
+            margin-bottom: 1.1rem;
+            box-shadow: var(--lf-shadow-sm);
+        }
+
+        div[class*="st-key-lf_card_"] .lf-section-head {
+            margin-top: 1.1rem;
+        }
+
+        div[class*="st-key-lf_subcard_"] {
+            background: #f7f8fd;
+            border: 1px solid #e3e7f3;
+            border-radius: var(--lf-radius-sm);
+            padding: 0.25rem 1.2rem 1.1rem;
+        }
+
+        div[class*="st-key-lf_subcard_"] .lf-section-head {
+            margin-top: 0.8rem;
+        }
+
+        /* Section and page headings: darker, heavier, clearly above body text. */
+        .lf-section-head h2 {
+            color: #1e1b4b;
+            font-size: 1.6rem;
+        }
+
+        [data-testid="stMain"] [data-testid="stMarkdownContainer"] > h2 {
+            color: #1e1b4b;
+            font-size: 2rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin: 0.4rem 0 0.2rem;
+        }
+
+        /* Sub-headings inside a section: smaller, with an accent bar. */
+        div[class*="st-key-lf_card_"] [data-testid="stMarkdownContainer"] > h3 {
+            font-size: 1.12rem;
+            font-weight: 800;
+            color: var(--lf-title);
+            border-left: 4px solid var(--lf-primary);
+            padding: 0.05rem 0 0.05rem 0.65rem;
+            margin: 1rem 0 0.35rem;
+        }
+
+        @media (max-width: 640px) {
+            div[class*="st-key-lf_card_"] { padding: 0.2rem 0.9rem 1rem; }
+            div[class*="st-key-lf_subcard_"] { padding: 0.2rem 0.75rem 0.9rem; }
+            [data-testid="stMain"] [data-testid="stMarkdownContainer"] > h2 { font-size: 1.6rem; }
         }
 
         @media (max-width: 900px) {

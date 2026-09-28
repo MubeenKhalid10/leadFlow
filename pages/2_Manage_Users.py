@@ -47,36 +47,38 @@ if profiles.empty:
 profiles = profiles.sort_values("created_at")
 me = auth.current_user()
 
-st.caption(f"{len(profiles)} user(s) total")
-st.divider()
-
-for row in profiles.itertuples():
-    c1, c2, c3, c4 = st.columns([4, 2, 2, 2])
-    c1.markdown(f"**{row.email}**" + (" · _you_" if row.id == me["id"] else ""))
-    c2.caption(f"Joined {pd.to_datetime(row.created_at):%Y-%m-%d}")
-    c3.markdown("🛡️ Admin" if row.role == "admin" else "👤 User")
-
-    with c4:
-        is_self = row.id == me["id"]
-        new_role = st.selectbox(
-            "Role",
-            ["user", "admin"],
-            index=["user", "admin"].index(row.role),
-            format_func=str.title,
-            key=f"role_select_{row.id}",
-            label_visibility="collapsed",
-            disabled=is_self,
-            help="You can't change your own role." if is_self else None,
-        )
-        if not is_self and new_role != row.role:
-            if st.button("Save role", key=f"save_role_{row.id}", type="primary",
-                         help=f"Make {row.email} {'an admin' if new_role == 'admin' else 'a standard user'}."):
-                try:
-                    client.table("profiles").update({"role": new_role}).eq(
-                        "id", row.id
-                    ).execute()
-                    st.toast(f"{row.email} is now {'an admin' if new_role == 'admin' else 'a standard user'}.", icon="✅")
-                    st.rerun()
-                except Exception as e:
-                    theme.friendly_error("Couldn't change this role", "Nothing was changed. Please try again.", e)
+with theme.card("users"):
+    theme.section_header("01-Team", "Team members", "Change a teammate's role with the menu on the right, then click Save role.")
+    st.caption(f"{len(profiles)} user(s) total")
     st.divider()
+
+    for row in profiles.itertuples():
+        c1, c2, c3, c4 = st.columns([4, 2, 2, 2])
+        c1.markdown(f"**{row.email}**" + (" · _you_" if row.id == me["id"] else ""))
+        c2.caption(f"Joined {pd.to_datetime(row.created_at):%Y-%m-%d}")
+        c3.markdown("🛡️ Admin" if row.role == "admin" else "👤 User")
+
+        with c4:
+            is_self = row.id == me["id"]
+            new_role = st.selectbox(
+                "Role",
+                ["user", "admin"],
+                index=["user", "admin"].index(row.role),
+                format_func=str.title,
+                key=f"role_select_{row.id}",
+                label_visibility="collapsed",
+                disabled=is_self,
+                help="You can't change your own role." if is_self else None,
+            )
+            if not is_self and new_role != row.role:
+                if st.button("Save role", key=f"save_role_{row.id}", type="primary",
+                             help=f"Make {row.email} {'an admin' if new_role == 'admin' else 'a standard user'}."):
+                    try:
+                        client.table("profiles").update({"role": new_role}).eq(
+                            "id", row.id
+                        ).execute()
+                        st.toast(f"{row.email} is now {'an admin' if new_role == 'admin' else 'a standard user'}.", icon="✅")
+                        st.rerun()
+                    except Exception as e:
+                        theme.friendly_error("Couldn't change this role", "Nothing was changed. Please try again.", e)
+        st.divider()

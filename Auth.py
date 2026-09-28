@@ -101,6 +101,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 from urllib.parse import quote, unquote
 
 import streamlit as st
@@ -146,7 +147,7 @@ def _credentials() -> tuple[str, str]:
 
 
 @st.cache_resource(show_spinner=False)
-def _anon_client() -> "Client":
+def _anon_client() -> Any:
     """Process-wide anonymous client (no user session attached)."""
     url, key = _credentials()
     return create_client(url, key)
