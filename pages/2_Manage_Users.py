@@ -14,7 +14,7 @@ import streamlit as st
 import Auth as auth
 import theme
 
-st.set_page_config(page_title="LeadFlow — Manage Users", page_icon="👥", layout="wide")
+st.set_page_config(page_title="Users & Access — LeadFlow", page_icon="👥", layout="wide")
 theme.inject_theme()
 theme.inject_sidebar_title()
 
@@ -22,15 +22,7 @@ auth.require_role("admin")
 auth.render_user_badge()
 theme.sidebar_nav(auth.current_user(), current="pages/2_Manage_Users.py")
 
-st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
-theme.render_topbar(show_how=False)
-st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("## 👥 Manage Users")
-st.caption(
-    "Choose who can manage the lead database. **Admins** can open the Lead Database and this page; "
-    "**Users** can clean and download leads."
-)
+theme.page_header("👥", "Users & Access", "Choose who can manage the lead database and other users.")
 
 try:
     client = auth.get_client()
@@ -41,21 +33,31 @@ except Exception as e:
     st.stop()
 
 if profiles.empty:
-    theme.empty_state("👥", "No users yet", "People appear here after they create an account on the sign-in page.")
+    theme.empty_state("👥", "No users yet", "People appear here after they create an account on the sign-in screen.")
     st.stop()
 
 profiles = profiles.sort_values("created_at")
 me = auth.current_user()
 
 with theme.card("users"):
-    theme.section_header("01-Team", "Team members", "Change a teammate's role with the menu on the right, then click Save role.")
-    st.caption(f"{len(profiles)} user(s) total")
+    theme.section_header(
+        None, "Team members",
+        "<b>Admin</b> — can open the Lead Database and this page. "
+        "<b>User</b> — can clean, split and download leads.",
+        icon="👥",
+    )
+    _admins = int((profiles["role"] == "admin").sum())
+    st.caption(f"{len(profiles)} user(s) · {_admins} admin(s). Pick a new role, then click Save role.")
+
+    widths = [4, 2, 2, 2]
+    for col, label in zip(st.columns(widths), ["Email", "Joined", "Current role", "Change role"]):
+        col.markdown(f"**{label}**")
     st.divider()
 
     for row in profiles.itertuples():
-        c1, c2, c3, c4 = st.columns([4, 2, 2, 2])
+        c1, c2, c3, c4 = st.columns(widths, vertical_alignment="center")
         c1.markdown(f"**{row.email}**" + (" · _you_" if row.id == me["id"] else ""))
-        c2.caption(f"Joined {pd.to_datetime(row.created_at):%Y-%m-%d}")
+        c2.write(f"{pd.to_datetime(row.created_at):%d-%b-%Y}")
         c3.markdown("🛡️ Admin" if row.role == "admin" else "👤 User")
 
         with c4:
@@ -71,7 +73,7 @@ with theme.card("users"):
                 help="You can't change your own role." if is_self else None,
             )
             if not is_self and new_role != row.role:
-                if st.button("Save role", key=f"save_role_{row.id}", type="primary",
+                if st.button("Save role", key=f"save_role_{row.id}", type="primary", width="stretch",
                              help=f"Make {row.email} {'an admin' if new_role == 'admin' else 'a standard user'}."):
                     try:
                         client.table("profiles").update({"role": new_role}).eq(

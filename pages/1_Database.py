@@ -36,7 +36,7 @@ from dataio import (
     validate_upload,
 )
 st.set_page_config(
-    page_title="LeadFlow — Database",
+    page_title="Lead Database — LeadFlow",
     page_icon="🗄️",
     layout="wide",
 )
@@ -50,20 +50,16 @@ auth.require_role("admin")
 auth.render_user_badge()
 theme.sidebar_nav(auth.current_user(), current="pages/1_Database.py")
 
-st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
-theme.render_topbar(show_how=False)
-st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("## 🗄️ Lead Database")
-st.caption(
-    "Your saved lead lists. When you clean a file, LeadFlow can skip anyone on these lists — "
-    "leads you already have, bounced emails, MQLs and people who unsubscribed."
+theme.page_header(
+    "🗄️", "Lead Database",
+    "Search, add and manage your saved lists. Leads on these lists can be removed when you clean a file.",
 )
 
 # --- Ensure the database is reachable ----------------------------------------
 _ok, _err = db.init_db()
 if not _ok:
-    st.error("⚠️ **The lead database isn't reachable right now.** Your lists can't be shown or changed until it's back.")
+    st.error("**The lead database isn't reachable right now.** Your lists can't be shown or changed until it's back.",
+             icon=":material/error:")
     with st.expander("How to fix this", expanded=True):
         st.markdown(
             "1. Make sure **PostgreSQL is running**.\n"
@@ -77,7 +73,6 @@ if not _ok:
     st.stop()
 
 _cfg = db.get_config()
-st.caption(f"✅ Connected to **{_cfg['dbname']}** at {_cfg['host']}:{_cfg['port']}")
 
 
 # ============================================================================ #
@@ -100,9 +95,9 @@ NEW_LIST_LABEL = "➕ Create a new list…"
 
 EMAIL_CATEGORIES = {
     # key: (tab label, icon, description shown above the uploader)
-    "mql": ("MQL", "🎯", "Leads already marked as marketing-qualified. Only an email column is needed — LeadFlow finds it automatically."),
-    "bounce": ("Bounced", "🚫", "Emails that bounced in past campaigns. Only an email column is needed — LeadFlow finds it automatically."),
-    "unsub": ("Unsubscribed", "✋", "People who asked not to be contacted. Only an email column is needed — LeadFlow finds it automatically."),
+    "mql": ("MQL", "🎯", "Leads already marked as marketing-qualified."),
+    "bounce": ("Bounced", "🚫", "Emails that bounced in past campaigns."),
+    "unsub": ("Unsubscribed", "✋", "People who asked not to be contacted."),
 }
 
 
@@ -161,9 +156,19 @@ def history_table(category: str | None, limit: int = 200) -> pd.DataFrame:
             "Uploaded by": hist["uploaded_by"],
             "Upload date": local.map(lambda t: f"{t:%d-%b-%Y}"),
             "Upload time": local.map(lambda t: f"{t:%I:%M %p}"),
-            "Status": hist["reverted_at"].map(lambda t: "" if pd.isna(t) else f"Reverted {fmt_datetime(t)}"),
+            "Status": hist["reverted_at"].map(lambda t: "✓ Added" if pd.isna(t) else f"↩️ Undone {fmt_datetime(t)}"),
         }
     )
+
+
+def last_upload_metric(col, category: str) -> None:
+    """'Last upload' metric: just the date (fits the card), with the full detail in its tooltip."""
+    try:
+        text = last_upload_text(category)
+    except Exception:
+        col.metric("Last upload", "—")
+        return
+    col.metric("Last upload", text.split(",")[0].split(" · ")[0], help=text)
 
 
 def last_upload_text(category: str) -> str:
@@ -237,8 +242,8 @@ def show_import_messages(base: str) -> None:
 
 def upload_limits_caption():
     st.caption(
-        f"Accepted: CSV, Excel (XLSX/XLS), ZIP or GZ · up to {fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES)} "
-        f"({fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES)} if compressed). You can select several files at once."
+        f"CSV, XLSX, XLS, ZIP or GZ · up to {fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES)} "
+        f"({fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES)} if compressed) · you can select several files at once"
     )
 
 
@@ -250,7 +255,7 @@ def show_history(category: str) -> None:
         theme.friendly_error("Couldn't load the upload history", "Try refreshing the page.", e)
         return
     if table.empty:
-        theme.empty_state("🕒", "No uploads yet", "Your completed uploads will appear here.")
+        theme.empty_state("🕒", "No uploads yet", "Files you add above will be listed here.")
     else:
         st.dataframe(table, width="stretch", hide_index=True)
 
@@ -284,7 +289,7 @@ def _delete_list(category, list_id):
         db.delete_email_list(category, list_id)
 
 
-@st.dialog("Delete this file?")
+@st.dialog("Delete this list?")
 def confirm_delete_file(category, list_id, name, rows, noun):
     st.markdown(f"**{html.escape(str(name))}** and all **{rows:,} {noun}** in it will be permanently deleted.")
     st.warning("This can't be undone. Its entries stay in the upload history.", icon="⚠️")
@@ -293,45 +298,52 @@ def confirm_delete_file(category, list_id, name, rows, noun):
         try:
             _delete_list(category, list_id)
         except Exception as e:
-            theme.friendly_error("Couldn't delete this file", "Nothing was deleted. Please try again.", e)
+            theme.friendly_error("Couldn't delete this list", "Nothing was deleted. Please try again.", e)
             return
         st.toast(f"Deleted '{name}' ({rows:,} {noun}).", icon="🗑️")
         st.rerun()
-    if no.button("Cancel", key="reset_cancel_delete", width="stretch"):
+    if no.button("Keep it", key="reset_cancel_delete", width="stretch"):
         st.rerun()
 
 
-@st.dialog("Revert this merge?")
+@st.dialog("Undo this upload?")
 def confirm_revert(upload_id, file_name, list_name, added, noun, when):
     st.markdown(
         f"This removes the **{added:,} {noun}** that **{html.escape(str(file_name))}** added to "
         f"**{html.escape(str(list_name))}** on {when}."
     )
-    st.caption("Leads added by other merges, and leads that were already in the file, are not affected.")
+    st.caption("Leads added by other uploads, and leads that were already in the list, are not affected.")
     st.warning("This can't be undone.", icon="⚠️")
     yes, no = st.columns(2)
-    if yes.button("↩️ Revert merge", key="del_confirm_revert", type="primary", width="stretch"):
+    if yes.button("↩️ Undo upload", key="del_confirm_revert", type="primary", width="stretch"):
         try:
             removed = db.revert_upload(upload_id)
         except Exception as e:
-            theme.friendly_error("Couldn't revert this merge", "Nothing was changed. Please try again.", e)
+            theme.friendly_error("Couldn't undo this upload", "Nothing was changed. Please try again.", e)
             return
-        st.toast(f"Merge reverted: {removed:,} {noun} removed from '{list_name}'.", icon="↩️")
+        st.toast(f"Upload undone: {removed:,} {noun} removed from '{list_name}'.", icon="↩️")
         st.rerun()
-    if no.button("Cancel", key="reset_cancel_revert", width="stretch"):
+    if no.button("Keep it", key="reset_cancel_revert", width="stretch"):
         st.rerun()
 
 
-def _table_header(cols, labels):
+def _table_header(key, widths, labels):
+    """Column headings, padded to line up with the boxed rows below them (theme CSS: lf_rowhead_)."""
+    cols = st.container(key=f"lf_rowhead_{key}").columns(widths)
     for col, label in zip(cols, labels):
         if label:
             col.markdown(f"**{label}**")
 
 
+def _table_row(key, widths):
+    """One table row enclosed in its own box (theme CSS: lf_row_)."""
+    return st.container(key=f"lf_row_{key}").columns(widths, vertical_alignment="center")
+
+
 def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows):
-    """One row per file (saved list): created date, rows, approximate size, merges, delete."""
+    """One row per saved list: created date, rows, approximate size, merges, delete."""
     if lists_df.empty:
-        theme.empty_state("📭", "No files yet", "Upload a file above to create your first one.")
+        theme.empty_state("📭", "No lists yet", "Add a file above to create your first list.")
         return
     try:
         merges = db.get_merge_counts(category)
@@ -339,31 +351,31 @@ def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows
         merges = {}
     per_row = storage_bytes / stored_rows if storage_bytes and stored_rows else None
     widths = [4, 2, 2, 2, 1.5, 1.8]
-    st.caption(f"{len(lists_df)} file(s) · {int(lists_df[count_col].sum()):,} {noun} total. "
-               "Size is the approximate space the file uses in the database.")
-    _table_header(st.columns(widths), ["File", "Created", noun.capitalize(), "Size", "Merges", ""])
+    st.caption(f"{len(lists_df)} list(s) · {int(lists_df[count_col].sum()):,} {noun} in total. "
+               "Size is the approximate space each list uses in the database.")
+    _table_header(f"list_{category}", widths, ["List", "Created", noun.capitalize(), "Size", "Uploads", ""])
     for row in lists_df.itertuples():
         rows = int(getattr(row, count_col))
-        c = st.columns(widths, vertical_alignment="center")
+        c = _table_row(f"list_{category}_{row.id}", widths)
         c[0].markdown(f"**{html.escape(str(row.name))}**")
         c[1].write(fmt_date(row.created_at))
         c[2].write(f"{rows:,}")
         c[3].write(f"≈ {fmt_bytes(rows * per_row)}" if per_row else "—")
         c[4].write(f"{merges.get(int(row.id), 0):,}")
-        if c[5].button("🗑️ Delete", key=f"del_file_{category}_{row.id}", type="primary", width="stretch",
-                       help=f"Permanently delete this file and its {rows:,} {noun}. You'll be asked to confirm."):
+        if c[5].button("🗑️ Delete", key=f"del_file_{category}_{row.id}", width="stretch",
+                       help=f"Permanently delete this list and its {rows:,} {noun}. You'll be asked to confirm."):
             confirm_delete_file(category, int(row.id), row.name, rows, noun)
 
 
 def render_merge_history(category, lists_df, noun):
-    """Every merge into one chosen file, with a revert button for each."""
+    """Every merge into one chosen list, with a revert button for each."""
     if lists_df.empty:
-        theme.empty_state("🔀", "No files yet", "Merges appear here once you add a file.")
+        theme.empty_state("🔀", "No lists yet", "Uploads appear here once you add a file.")
         return
     names = {int(r.id): r.name for r in lists_df.itertuples()}
     list_id = st.selectbox(
-        "Choose a file", list(names), format_func=lambda i: names.get(i, str(i)), key=f"merge_file_{category}",
-        help="Shows every upload that was merged into this file.",
+        "List", list(names), format_func=lambda i: names.get(i, str(i)), key=f"merge_file_{category}",
+        help="Shows every upload that was merged into this list.",
     )
     try:
         merges = db.get_list_merges(category, list_id)
@@ -371,28 +383,28 @@ def render_merge_history(category, lists_df, noun):
         theme.friendly_error("Couldn't load the merge history", "Try refreshing the page.", e)
         return
     if merges.empty:
-        theme.empty_state("🔀", "No merges recorded for this file", "Merges appear here after you add a file to it.")
+        theme.empty_state("🔀", "No uploads recorded for this list", "Uploads appear here after you add a file to it.")
         return
     widths = [2.2, 3.5, 1.6, 2.6, 2.4, 1.8]
-    _table_header(st.columns(widths), ["Merged on", "File merged", noun.capitalize() + " added", "By", "Status", ""])
+    _table_header(f"merge_{category}", widths, ["Uploaded", "File", noun.capitalize() + " added", "By", "Status", ""])
     for m in merges.itertuples():
-        c = st.columns(widths, vertical_alignment="center")
+        c = _table_row(f"merge_{category}_{m.id}", widths)
         added = int(m.rows_written or 0)
         c[0].write(fmt_datetime(m.uploaded_at))
         c[1].write(str(m.file_name))
         c[2].write(f"{added:,}")
         c[3].write(m.uploaded_by or "—")
         if not pd.isna(m.reverted_at):
-            c[4].write(f"↩️ Reverted {fmt_date(m.reverted_at)}")
+            c[4].write(f"↩️ Undone {fmt_date(m.reverted_at)}")
         elif added == 0:
             c[4].write("Nothing added")
         elif pd.isna(m.batch_created_at):
-            c[4].markdown("Can't be reverted", help="This merge was recorded before revert was available, and "
-                          "its rows couldn't be matched with certainty, so it can't be reverted safely.")
+            c[4].markdown("Can't be undone", help="This upload was recorded before undo was available, and "
+                          "its rows couldn't be matched with certainty, so it can't be undone safely.")
         else:
-            c[4].write("✅ In the file")
-            if c[5].button("↩️ Revert", key=f"del_revert_{m.id}", type="primary", width="stretch",
-                           help=f"Remove the {added:,} {noun} this merge added. You'll be asked to confirm."):
+            c[4].write("✓ In the list")
+            if c[5].button("↩️ Undo", key=f"del_revert_{m.id}", width="stretch",
+                           help=f"Remove the {added:,} {noun} this upload added. You'll be asked to confirm."):
                 confirm_revert(int(m.id), m.file_name, names[list_id], added, noun, fmt_datetime(m.uploaded_at))
 
 
@@ -421,16 +433,16 @@ def render_master_search(result):
     group_counts = group_series.value_counts().to_dict()
     ordered_groups = [k for k, _ in sorted(group_counts.items(), key=lambda x: -x[1])]
     lowered = values.str.lower()
-    per_term = " · ".join(f"**{html.escape(t)}**: {int(lowered.str.contains(t.lower(), regex=False).sum()):,}"
+    per_term = " · ".join(f"<b>{html.escape(t)}</b> {int(lowered.str.contains(t.lower(), regex=False).sum()):,}"
                           for t in terms)
-    st.caption(f"**{len(found):,} leads** in **{len(ordered_groups):,}** {field} groups. Leads per search value — {per_term}")
-    st.dataframe(
-        pd.DataFrame({field: ordered_groups, "Leads": [group_counts[g] for g in ordered_groups]}),
-        width="stretch", hide_index=True,
+    theme.status_line(
+        "success", f"{len(found):,} leads found in {len(ordered_groups):,} {html.escape(field)} groups",
+        f"Per search value: {per_term}" if len(terms) > 1 else "",
     )
 
     safe_field = field.lower().replace(" ", "_")
     all_col, one_sel, one_dl = st.columns([1.2, 1.6, 1.2], vertical_alignment="bottom")
+    all_col.caption(f"Downloads as {group_download_name(field, ordered_groups)}")
     all_col.download_button(
         f"⬇️ Download all ({len(found):,} leads)",
         data=lambda df=found: df.to_csv(index=False).encode("utf-8"),
@@ -442,11 +454,15 @@ def render_master_search(result):
                                       format_func=lambda g: f"{g} ({group_counts[g]:,} leads)")
         one_df = found[group_series == one_group]
         one_dl.download_button(
-            f"⬇️ Download {one_group}",
+            f"⬇️ Download {one_group} ({group_counts[one_group]:,})",
             data=lambda df=one_df: df.to_csv(index=False).encode("utf-8"),
             file_name=group_download_name(field, [one_group]),
             mime="text/csv", key=f"dl_master_search_one_{safe_field}", width="stretch",
         )
+    st.dataframe(
+        pd.DataFrame({field: ordered_groups, "Leads": [group_counts[g] for g in ordered_groups]}),
+        width="stretch", hide_index=True, height=min(35 * (len(ordered_groups) + 1) + 3, 320),
+    )
 
 
 # ============================================================================ #
@@ -457,20 +473,6 @@ try:
 except Exception as e:
     theme.friendly_error("Couldn't read your lead counts", "The numbers below may show 0. Try refreshing the page.", e)
     COUNTS = {c: {"lists": 0, "rows": 0, "unique": 0} for c in db.ALL_CATEGORIES}
-
-# At-a-glance dashboard (live database counts + this session's campaign file).
-dash = st.columns(5)
-dash[0].metric("🗂️ Master leads", f"{COUNTS['master']['unique']:,}",
-               help="Total unique leads stored in your main database.")
-dash[1].metric("🎯 MQL leads", f"{COUNTS['mql']['unique']:,}",
-               help="Leads already marked as marketing-qualified.")
-dash[2].metric("🚫 Bounced emails", f"{COUNTS['bounce']['unique']:,}",
-               help="Emails that bounced in past campaigns.")
-dash[3].metric("✋ Unsubscribed", f"{COUNTS['unsub']['unique']:,}",
-               help="People who asked not to be contacted.")
-_campaign = st.session_state.get("cleaned_df")
-dash[4].metric("📣 Final Campaign", f"{len(_campaign):,}" if _campaign is not None else "—",
-               help="Clean leads waiting to be downloaded on the Clean Leads page in this session.")
 
 
 def _tab_label(icon, label, cat):
@@ -493,8 +495,8 @@ tab_master, tab_mql, tab_bounce, tab_unsub = st.tabs(
 with tab_master:
     with theme.card("master_overview"):
         theme.section_header(
-            "01-Overview", "Master leads",
-            "Your main database of leads. Anyone in here can be skipped automatically when you clean a new file.",
+            None, "Master leads",
+            "Your main lead database. Leads here are skipped when you clean a new file.", icon="🗂️",
         )
         m = COUNTS["master"]
         try:
@@ -503,17 +505,18 @@ with tab_master:
             stor = None
             st.warning(f"Storage details are unavailable right now ({e}).")
 
-        c1, c2, _, _ = st.columns(4)
-        c1.metric("📧 Leads (unique emails)", f"{m['unique']:,}", help="Each email address is counted once.")
-        c2.metric("📋 Lists", f"{m['lists']:,}", help="Named groups your Master leads are saved in.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Leads", f"{m['unique']:,}", help="Unique email addresses — each is counted once.")
+        c2.metric("Lists", f"{m['lists']:,}", help="Named groups your Master leads are saved in.")
+        last_upload_metric(c3, "master")
 
         if m["rows"] > m["unique"]:
-            st.info(
-                f"**{m['rows'] - m['unique']:,} email(s) appear in more than one Master list.** "
-                "That's fine — each is counted once, and new uploads never add an email that's already saved."
+            st.caption(
+                f"{m['rows'] - m['unique']:,} email(s) appear in more than one Master list. "
+                "Each is counted once, and new uploads never add an email that's already saved."
             )
 
-        with st.expander("💾 Storage & upload limits", expanded=False):
+        with st.expander("Storage & upload limits", expanded=False):
             c3, c4 = st.columns(2)
             c3.metric("🗄️ Database size", fmt_bytes(stor["database_bytes"]) if stor else "—")
             c4.metric("🗂️ Master leads storage", fmt_bytes(stor["master_bytes"]) if stor else "—")
@@ -537,17 +540,46 @@ with tab_master:
                     if not (stor and stor["quota_bytes"]) else ""
                 )
             )
+            st.caption(f"Connected to {_cfg['dbname']} at {_cfg['host']}:{_cfg['port']}.")
+
+    with theme.card("master_search"):
+        theme.section_header(
+            None, "Search & download",
+            "Find Master leads by field and download them. Your database isn't changed.", icon="🔎",
+        )
+        with st.form("master_search_form", border=False):
+            s_field, s_text, s_go = st.columns([1, 3, 1], vertical_alignment="bottom")
+            search_field = s_field.selectbox("Search in", list(MASTER_FIELD_MAP),
+                                             index=list(MASTER_FIELD_MAP).index("Industry"), key="master_search_field")
+            search_text = s_text.text_input("Search values", key="master_search_text",
+                                            placeholder="e.g. Real Estate, Construction, Software")
+            searched = s_go.form_submit_button("🔎 Search", type="primary", width="stretch")
+            st.caption("Separate several values with commas. Each value matches any lead that contains it.")
+        if searched:
+            terms = split_search_terms(search_text)
+            if not terms:
+                st.session_state.pop("master_search", None)
+                st.error("Type at least one value to search for, then click Search.", icon=":material/error:")
+            else:
+                try:
+                    with st.spinner("Searching your Master database…"):
+                        found = db.search_master_contacts(MASTER_FIELD_MAP[search_field], terms,
+                                                          limit=MASTER_SEARCH_LIMIT + 1)
+                    st.session_state["master_search"] = {"field": search_field, "terms": terms, "df": found}
+                except Exception as e:
+                    theme.friendly_error("Couldn't search your Master database", "Please try again.", e)
+        render_master_search(st.session_state.get("master_search"))
 
     with theme.card("master_add"):
         theme.section_header(
-            "02-Add leads", "Add leads to your Master database",
-            "Upload one or more files. New leads are added; leads already saved (same email) are skipped. "
-            "Nothing already in your database is changed or deleted.",
+            None, "Add leads",
+            "Upload one or more files. Only new emails are added — nothing already saved is changed or deleted.",
+            icon="📥",
         )
 
         show_import_messages("master_import_files")
         master_files = st.file_uploader(
-            "Master file(s) — CSV, XLSX, XLS, ZIP, or GZ",
+            "Master file(s)",
             type=["csv", "xlsx", "xls", "zip", "gz"],
             accept_multiple_files=True,
             key=uploader_key("master_import_files"),
@@ -672,50 +704,21 @@ with tab_master:
                         )
 
     with theme.card("master_files"):
-        theme.section_header("03-Your files", "Your files", "Every Master file with its size and how many uploads were merged into it.")
+        theme.section_header(None, "Your lists", "Every Master list, its size, and how many uploads it holds.", icon="📋")
         try:
             master_lists_df = db.get_master_lists()
         except Exception as e:
             master_lists_df = pd.DataFrame()
-            theme.friendly_error("Couldn't load your Master files", "Try refreshing the page.", e)
+            theme.friendly_error("Couldn't load your Master lists", "Try refreshing the page.", e)
         render_files("master", master_lists_df, "contact_count", "leads",
                      stor["master_bytes"] if stor else None, m["rows"])
 
-    with theme.card("master_merges"):
-        theme.section_header("04-Merges", "Merge history", "Every upload merged into a file. Revert a merge to remove the leads it added.")
-        render_merge_history("master", master_lists_df, "leads")
-
     with theme.card("master_history"):
-        theme.section_header("05-History", "Upload history", "Every file added to your Master database.")
-        show_history("master")
-
-    with theme.card("master_search"):
-        theme.section_header(
-            "06-Search", "Search & download",
-            "Find Master leads by a field and download them. Separate several values with commas, "
-            "e.g. Real Estate, Construction, Software. Downloading doesn't change your database.",
-        )
-        with st.form("master_search_form", border=False):
-            s_field, s_text, s_go = st.columns([1, 3, 1], vertical_alignment="bottom")
-            search_field = s_field.selectbox("Search in", list(MASTER_FIELD_MAP),
-                                             index=list(MASTER_FIELD_MAP).index("Industry"), key="master_search_field")
-            search_text = s_text.text_input("🔎 Search", key="master_search_text",
-                                            placeholder="e.g. Real Estate, Construction, Software")
-            searched = s_go.form_submit_button("Search", type="primary", width="stretch")
-        if searched:
-            terms = split_search_terms(search_text)
-            if not terms:
-                st.session_state.pop("master_search", None)
-                st.error("Type at least one value to search for.")
-            else:
-                try:
-                    with st.spinner("Searching your Master database…"):
-                        found = db.search_master_contacts(MASTER_FIELD_MAP[search_field], terms,
-                                                          limit=MASTER_SEARCH_LIMIT + 1)
-                    st.session_state["master_search"] = {"field": search_field, "terms": terms, "df": found}
-                except Exception as e:
-                    theme.friendly_error("Couldn't search your Master database", "Please try again.", e)
-        render_master_search(st.session_state.get("master_search"))
+        theme.section_header(None, "History", "What was added, when, and by whom.", icon="🕒")
+        with st.expander("Uploads per list — undo an upload", expanded=False):
+            render_merge_history("master", master_lists_df, "leads")
+        with st.expander("All uploads", expanded=False):
+            show_history("master")
 
 
 # ---------------------------------------------------------------------------- #
@@ -726,25 +729,25 @@ def render_email_category(category: str):
     cnt = COUNTS[category]
 
     with theme.card(f"{category}_overview"):
-        theme.section_header("01-Overview", f"{label}", description.split(" Only")[0])
+        theme.section_header(
+            None, label, description + " Leads with these emails can be removed when you clean a file.", icon=icon,
+        )
         c1, c2, c3 = st.columns(3)
-        c1.metric(f"{icon} Emails", f"{cnt['unique']:,}", help="Each email address is counted once.")
-        c2.metric("📋 Lists", f"{cnt['lists']:,}")
-        try:
-            c3.metric("🕒 Last Upload", last_upload_text(category))
-        except Exception:
-            c3.metric("🕒 Last Upload", "—")
+        c1.metric("Emails", f"{cnt['unique']:,}", help="Unique email addresses — each is counted once.")
+        c2.metric("Lists", f"{cnt['lists']:,}")
+        last_upload_metric(c3, category)
 
     with theme.card(f"{category}_add"):
         theme.section_header(
-            "02-Add emails", f"Add to {label}",
-            description + " Emails already saved are skipped; nothing is changed or deleted.",
+            None, f"Add to {label}",
+            "Upload files with an email column — LeadFlow finds it automatically. Emails already saved are skipped.",
+            icon="📥",
         )
 
         uploader_base = f"{category}_import_files"
         show_import_messages(uploader_base)
         files = st.file_uploader(
-            f"{label} file(s) — CSV, XLSX, XLS, ZIP, or GZ",
+            f"{label} file(s)",
             type=["csv", "xlsx", "xls", "zip", "gz"],
             accept_multiple_files=True,
             key=uploader_key(uploader_base),
@@ -824,12 +827,12 @@ def render_email_category(category: str):
                         )
 
     with theme.card(f"{category}_files"):
-        theme.section_header("03-Your files", "Your files", f"Every {label} file with its size and how many uploads were merged into it.")
+        theme.section_header(None, "Your lists", f"Every {label} list, its size, and how many uploads it holds.", icon="📋")
         try:
             lists_df = db.get_email_lists(category)
         except Exception as e:
             lists_df = pd.DataFrame()
-            theme.friendly_error(f"Couldn't load your {label} files", "Try refreshing the page.", e)
+            theme.friendly_error(f"Couldn't load your {label} lists", "Try refreshing the page.", e)
         try:
             stor = db.get_storage_info()
         except Exception:
@@ -837,13 +840,12 @@ def render_email_category(category: str):
         render_files(category, lists_df, "email_count", "emails",
                      stor[f"{category}_bytes"] if stor else None, cnt["rows"])
 
-    with theme.card(f"{category}_merges"):
-        theme.section_header("04-Merges", "Merge history", "Every upload merged into a file. Revert a merge to remove the emails it added.")
-        render_merge_history(category, lists_df, "emails")
-
     with theme.card(f"{category}_history"):
-        theme.section_header("05-History", "Upload history", f"Every file added to {label}.")
-        show_history(category)
+        theme.section_header(None, "History", "What was added, when, and by whom.", icon="🕒")
+        with st.expander("Uploads per list — undo an upload", expanded=False):
+            render_merge_history(category, lists_df, "emails")
+        with st.expander("All uploads", expanded=False):
+            show_history(category)
 
 
 with tab_mql:

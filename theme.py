@@ -2,17 +2,18 @@
 LeadFlow — shared UI theme
 --------------------------
 
-The visual layer (fonts, colours, section headers, top bar, sidebar branding,
-and the "How it works" dialog) lives here so every page — the main cleaning
-page, the Database page and the Manage Users page — looks identical.
+The visual layer (fonts, colours, page and section headers, status messages,
+sidebar branding and the "How it works" dialog) lives here so every page — the
+Clean Leads page, the Lead Database page and the Users & Access page — looks and
+behaves the same.
 
 Usage on each page (after st.set_page_config):
     import theme
     theme.inject_theme()
     theme.inject_sidebar_title()
-    theme.render_topbar()
+    theme.page_header("🧹", "Clean Leads", "One sentence on what this page is for.")
     ...
-    theme.section_header("01-Upload the Files", "Upload")
+    theme.section_header(1, "Upload your lead file", "Add a CSV or Excel file to begin.", icon="📤")
 """
 
 import html
@@ -23,40 +24,12 @@ import streamlit as st
 _log = logging.getLogger("leadflow")
 
 
-SECTION_ICONS = {
-    "Upload": "📤",
-    "Review Data": "🔍",
-    "Configure": "⚙️",
-    "Run Processing": "▶️",
-    "Review Results": "📊",
-    "Download": "⬇️",
-    "Save to Master": "💾",
-    "Manage Lists": "🗄️",
-    "Import": "📥",
-    "Database": "🗃️",
-    "Clean": "🧹",
-    "Results": "📊",
-    "Merge": "📥",
-    "Overview": "📊",
-    "History": "🕒",
-    "Storage": "💾",
-    "Review": "🔍",
-    "Options": "⚙️",
-    "Save": "💾",
-    "Add leads": "📥",
-    "Add emails": "📥",
-    "Your lists": "🗄️",
-    "Your files": "🗂️",
-    "Team": "👥",
-    "Merges": "🔀",
-}
-
-# The main page's workflow, shown as a progress strip under the top bar.
+# The main page's workflow, shown as a progress strip under the page header.
 WORKFLOW_STEPS = [
     ("Upload", "Add your lead file"),
     ("Review", "Check columns & options"),
-    ("Clean", "Remove bad & duplicate leads"),
-    ("Download", "Split & download your campaign"),
+    ("Clean", "Remove unwanted leads"),
+    ("Download", "Get your campaign files"),
 ]
 
 
@@ -64,59 +37,38 @@ WORKFLOW_STEPS = [
 def show_how_it_works():
     st.markdown(
         """
-        ### Clean your lead data in 5 steps
+        **1. Upload** — add a CSV or Excel file of leads.
 
-        **1. Upload your lead file**
-        Add the CSV or Excel file you want cleaned. Right below it, tick which
-        saved lists to exclude: **Master leads** (leads you already have),
-        **Bounced**, **MQL** and **Unsubscribed**. Admins manage those lists on
-        the **🗄️ Database** page.
+        **2. Review** — check that LeadFlow matched your columns (only **Email** is
+        required) and tick the saved lists whose leads you want removed:
+        **Master**, **Bounced**, **MQL** and **Unsubscribed**.
 
-        **2. Check your data**
-        Look over the preview and confirm LeadFlow matched your columns
-        correctly. Only the **Email** column is required.
+        **3. Clean** — LeadFlow removes leads with no email, India-based contacts,
+        rows with garbled characters, duplicates, and anyone on the ticked lists.
 
-        **3. Choose your options**
-        Decide whether to remove contacts based in India, and how you'd like to
-        split your download (by country, or by a field such as Job Title).
-
-        **4. Clean your leads**
-        LeadFlow removes leads with no email, contacts based in India, rows with
-        garbled characters, duplicate leads, and anyone on the lists you ticked.
-
-        **5. Download & save**
-        Download the full campaign file, or split it by country or field.
-        Downloading a split file removes those leads from the campaign file, so
-        nobody is sent the same campaign twice. You can also save the cleaned
-        leads to a Master list so they're excluded next time.
+        **4. Download** — get the full campaign file, or split it by country or by
+        a field such as Industry. Downloading a split removes those leads from the
+        campaign file, so nobody gets the same campaign twice.
         """
     )
+    st.caption("Admins manage the saved lists on the Lead Database page.")
 
 
-def render_topbar(show_how: bool = True):
-    """Brand + tagline, with an optional 'How it works' button."""
-    top_left, top_how = st.columns([9, 2])
+def page_header(icon, title, subtitle, show_how=False):
+    """Top of every page: where you are (title) and what the page is for (one sentence).
 
-    with top_left:
-        st.markdown(
-            """
-            <div class="lf-brand-wrap">
-                <div class="lf-brand">LeadFlow</div>
-                <div class="lf-tagline">
-                    Turn messy lead data into clean, campaign-ready contacts.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with top_how:
-        if show_how and st.button(
-            "How it works",
-            key="how_it_works_btn",
-            use_container_width=True,
-        ):
-            show_how_it_works()
+    `show_how` adds a small "How it works" help button on the right.
+    """
+    text_col, help_col = st.columns([5, 1], vertical_alignment="center")
+    text_col.markdown(
+        f'<header class="lf-page-head"><h1 class="lf-page-title">'
+        f'<span aria-hidden="true">{icon}</span> {html.escape(title)}</h1>'
+        f'<p class="lf-page-sub">{html.escape(subtitle)}</p></header>',
+        unsafe_allow_html=True,
+    )
+    if show_how and help_col.button("How it works", key="how_it_works_btn", type="tertiary",
+                                    icon=":material/help:", width="stretch"):
+        show_how_it_works()
 
 
 def inject_sidebar_title():
@@ -126,20 +78,14 @@ def inject_sidebar_title():
         <div class="lf-sidebar-header">
             <div class="lf-sidebar-logo">
                 <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="28" height="28" rx="8" fill="url(#sidebar_logo_grad)"/>
+                    <rect width="28" height="28" rx="8" fill="#4f46e5"/>
                     <path d="M7 10h6m-6 4h10m-10 4h8" stroke="white" stroke-width="2" stroke-linecap="round"/>
                     <circle cx="20" cy="10" r="3" fill="white" fill-opacity="0.9"/>
-                    <defs>
-                        <linearGradient id="sidebar_logo_grad" x1="0" y1="0" x2="28" y2="28" gradientUnits="userSpaceOnUse">
-                            <stop stop-color="#6366f1"/>
-                            <stop offset="1" stop-color="#4f46e5"/>
-                        </linearGradient>
-                    </defs>
                 </svg>
             </div>
             <div class="lf-sidebar-title-text">
                 <span class="lf-sidebar-brand-name">LeadFlow</span>
-                <span class="lf-sidebar-brand-sub">Data Cleaner</span>
+                <span class="lf-sidebar-brand-sub">Lead data cleaning</span>
             </div>
         </div>
         """,
@@ -150,9 +96,9 @@ def inject_sidebar_title():
 # Sidebar menu: (page file, label, icon, admin only, tooltip). Replaces Streamlit's
 # file-name based menu (hidden via client.showSidebarNavigation in config.toml).
 NAV_PAGES = [
-    ("app.py", "Clean Leads", "🧹", False, "Upload a lead file, clean it and download your campaign."),
+    ("app.py", "Clean Leads", "🧹", False, "Upload a lead file, clean it, then split and download your campaign."),
     ("pages/1_Database.py", "Lead Database", "🗄️", True, "Your saved Master, MQL, Bounced and Unsubscribed lists."),
-    ("pages/2_Manage_Users.py", "Manage Users", "👥", True, "Give teammates admin access."),
+    ("pages/2_Manage_Users.py", "Users & Access", "👥", True, "Choose who has admin access."),
 ]
 
 
@@ -179,23 +125,19 @@ def sidebar_nav(user=None, current="app.py"):
                 _log.warning("Sidebar link to %s unavailable: %s", page, e)
 
 
-def section_header(number, title, subtitle=None):
-    """Renders a numbered section badge + kicker + heading (+ optional one-line explanation)."""
-    step_no = number.split("-", 1)[0].strip()
-    kicker = number.split("-", 1)[1].strip() if "-" in number else title
-    icon = SECTION_ICONS.get(title) or SECTION_ICONS.get(kicker, "")
+def section_header(number, title, subtitle=None, icon=""):
+    """Section heading: an optional step number, the title, and one short line on its purpose.
+
+    Pass a number (1, 2, …) only for real, ordered workflow steps; use None for plain sections.
+    """
+    badge = (f'<div class="lf-section-badge" aria-hidden="true">{html.escape(str(number))}</div>'
+             if number else "")
+    step = f'<span class="lf-sr-only">Step {html.escape(str(number))}: </span>' if number else ""
+    icon_html = f'<span aria-hidden="true">{icon}</span> ' if icon else ""
     sub = f'<div class="lf-section-sub">{subtitle}</div>' if subtitle else ""
     st.markdown(
-        f"""
-        <div class="lf-section-head">
-            <div class="lf-section-badge">{step_no}</div>
-            <div class="lf-section-text">
-                <div class="lf-section-kicker">{kicker}</div>
-                <h2>{icon}&nbsp;{title}</h2>
-                {sub}
-            </div>
-        </div>
-        """,
+        f'<div class="lf-section-head">{badge}<div class="lf-section-text">'
+        f'<h2>{step}{icon_html}{title}</h2>{sub}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -227,12 +169,62 @@ def workflow_steps(current, target=None):
 
 
 def empty_state(icon, title, text=""):
-    """Friendly placeholder for a section with nothing to show yet."""
+    """Placeholder for a section with nothing to show: what is empty, and what to do about it."""
     st.markdown(
         f'<div class="lf-empty"><div class="lf-empty-icon" aria-hidden="true">{icon}</div>'
         f'<div class="lf-empty-title">{title}</div>'
         + (f'<div class="lf-empty-text">{text}</div>' if text else "")
         + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def status_line(kind, title, detail=""):
+    """Compact one-line state message: ✓ success, ⚠ warning, ✕ error, → next step, • info.
+
+    `title` and `detail` are HTML; escape any user data in them before calling.
+    The symbol plus the words carry the meaning, so the state never depends on colour alone.
+    """
+    symbol = {"success": "✓", "warning": "⚠", "error": "✕", "next": "→", "info": "•"}[kind]
+    detail_html = f'<span class="lf-status-detail">{detail}</span>' if detail else ""
+    st.markdown(
+        f'<div class="lf-status lf-status-{kind}" role="status">'
+        f'<span class="lf-status-icon" aria-hidden="true">{symbol}</span>'
+        f'<span class="lf-status-title">{title}</span>{detail_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def removal_breakdown(groups, total):
+    """"Why were leads removed?" panel: reasons in titled groups, each with its count, a bar
+    showing its share of `total`, and a subtotal; a total line that matches the Removed metric.
+
+    groups: [(group title, [(label, short hint, count or None if the check didn't run), ...]), ...]
+    """
+    def row(label, hint, n):
+        if n is None:
+            return (f'<div class="lf-why-row lf-off"><div class="lf-why-label">{label}'
+                    f'<small>list not ticked</small></div><div class="lf-why-bar"></div>'
+                    f'<div class="lf-why-count">Not checked</div></div>')
+        n = int(n)
+        pct = 0 if not total or not n else max(n / total * 100, 1.5)
+        return (f'<div class="lf-why-row{" lf-zero" if not n else ""}"><div class="lf-why-label">{label}'
+                f'<small>{hint}</small></div>'
+                f'<div class="lf-why-bar" aria-hidden="true"><span style="width:{pct:.1f}%"></span></div>'
+                f'<div class="lf-why-count">{n:,}</div></div>')
+
+    sections = []
+    for title, rows in groups:
+        subtotal = sum(int(n) for _, _, n in rows if n)
+        sections.append(
+            f'<section class="lf-why-group"><div class="lf-why-group-head"><span>{title}</span>'
+            f'<b>{subtotal:,}</b></div>' + "".join(row(*r) for r in rows) + "</section>"
+        )
+    st.markdown(
+        f'<div class="lf-why" role="group" aria-label="Why leads were removed">'
+        f'<div class="lf-why-title">Why were leads removed?</div>'
+        f'<div class="lf-why-groups">{"".join(sections)}</div>'
+        f'<div class="lf-why-total"><span>Total removed</span><b>{total:,}</b></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -253,7 +245,7 @@ def subcard(key):
 
 def friendly_error(title, message, error=None):
     """Plain-language error with a next step; the raw error goes to the log and a small caption."""
-    st.error(f"**{title}**  \n{message}", icon="⚠️")
+    st.error(f"**{title}**  \n{message}", icon=":material/error:")
     if error is not None:
         _log.error("%s: %s", title, error, exc_info=error if isinstance(error, BaseException) else None)
         st.caption(f"Technical details: {type(error).__name__}: {html.escape(str(error))[:500]}")
@@ -273,8 +265,11 @@ def inject_theme():
             --lf-border: #dde2ef;
             --lf-title: #161a2d;
             --lf-body: #4c5268;
-            --lf-muted: #7f869b;
+            --lf-muted: #646b82;
+            --lf-input-border: #8b93ab;
+            --lf-focus: 0 0 0 3px rgba(79, 70, 229, 0.35);
             --lf-primary: #4f46e5;
+            --lf-primary-hover: #4338ca;
             --lf-primary-2: #6366f1;
             --lf-primary-3: #818cf8;
             --lf-primary-soft: #eef0ff;
@@ -288,7 +283,7 @@ def inject_theme():
             --lf-shadow-sm: 0 1px 3px rgba(22, 26, 45, 0.07), 0 1px 2px rgba(22, 26, 45, 0.04);
             --lf-shadow-md: 0 4px 16px rgba(22, 26, 45, 0.08), 0 2px 6px rgba(22, 26, 45, 0.05);
             --lf-shadow-lg: 0 10px 30px rgba(22, 26, 45, 0.10), 0 4px 12px rgba(22, 26, 45, 0.06);
-            --lf-shadow-primary: 0 8px 24px rgba(79, 70, 229, 0.28);
+            --lf-shadow-primary: 0 1px 2px rgba(22, 26, 45, 0.12);
             --lf-radius: 14px;
             --lf-radius-sm: 10px;
             --lf-sidebar-bg: #0d0f1c;
@@ -358,15 +353,12 @@ def inject_theme():
            MAIN BACKGROUND
            --------------------------------------------------------------- */
         .stApp {
-            background:
-                radial-gradient(ellipse 900px 350px at 75% -5%, rgba(99, 102, 241, 0.08) 0%, transparent 70%),
-                radial-gradient(ellipse 600px 300px at 10% 80%, rgba(79, 70, 229, 0.05) 0%, transparent 60%),
-                linear-gradient(180deg, #fafbff 0%, var(--lf-bg) 40%, #f4f5fb 100%);
+            background: var(--lf-bg);
         }
 
         [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
             max-width: 1140px;
-            padding-top: 5.25rem;
+            padding-top: 4.25rem;
             padding-bottom: 3.5rem;
         }
 
@@ -430,10 +422,7 @@ def inject_theme():
             font-size: 1.25rem;
             font-weight: 800;
             letter-spacing: -0.02em;
-            background: linear-gradient(135deg, #a5b4fc 0%, #818cf8 50%, #6366f1 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            color: #e0e7ff !important;
             line-height: 1.2;
         }
 
@@ -482,7 +471,6 @@ def inject_theme():
             background: rgba(99, 102, 241, 0.1) !important;
             color: #a5b4fc !important;
             border-color: rgba(99, 102, 241, 0.2) !important;
-            transform: translateX(2px) !important;
         }
 
         [data-testid="stSidebar"] [data-testid="stSidebarNavLink"][aria-selected="true"],
@@ -524,12 +512,13 @@ def inject_theme():
         [data-testid="stSidebar"] a[data-testid="stPageLink-NavLink"]:hover {
             background: rgba(99, 102, 241, 0.12) !important;
             border-color: rgba(99, 102, 241, 0.25) !important;
-            transform: translateX(2px);
         }
 
         [data-testid="stSidebar"] div.st-key-lf_nav_current [data-testid="stPageLink-NavLink"] {
-            background: linear-gradient(135deg, rgba(79, 70, 229, 0.3) 0%, rgba(99, 102, 241, 0.18) 100%) !important;
+            background: rgba(99, 102, 241, 0.24) !important;
             border-color: rgba(129, 140, 248, 0.45) !important;
+            /* Accent bar marks the current page without relying on colour alone. */
+            box-shadow: inset 3px 0 0 #a5b4fc !important;
         }
 
         [data-testid="stSidebar"] div.st-key-lf_nav_current [data-testid="stPageLink-NavLink"] span,
@@ -704,493 +693,430 @@ def inject_theme():
         }
 
         /* ---------------------------------------------------------------
-           TOP BAR
+           PAGE HEADER (theme.page_header) — where am I, what is this page for
            --------------------------------------------------------------- */
-        .lf-topbar {
-            padding: 0.2rem 0 1.1rem;
-            border-bottom: 1px solid #e7eaf4;
-            margin-bottom: 1.25rem;
+        .lf-page-head {
+            padding: 0.1rem 0 0.2rem;
         }
 
-        .lf-brand-wrap {
-            display: flex;
-            align-items: baseline;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-        }
-
-        .lf-brand {
-            font-size: 2.75rem;
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] h1.lf-page-title {
+            margin: 0;
+            padding: 0;
+            color: var(--lf-title);
+            font-size: 1.85rem;
             font-weight: 800;
-            letter-spacing: -0.04em;
-            background: linear-gradient(135deg, #4f46e5 0%, #6366f1 50%, #818cf8 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            letter-spacing: -0.02em;
+            line-height: 1.2;
         }
 
-        .lf-tagline {
-            color: var(--lf-muted);
-            font-size: 0.95rem;
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] p.lf-page-sub {
+            margin: 0.3rem 0 0;
+            color: var(--lf-body);
+            font-size: 0.98rem;
             font-weight: 500;
         }
 
         /* ---------------------------------------------------------------
-           SECTION HEADERS
+           SECTION HEADERS (theme.section_header)
            --------------------------------------------------------------- */
         .lf-section-head {
-            margin-top: 2.4rem;
-            margin-bottom: 1.1rem;
+            margin-top: 1.1rem;
+            margin-bottom: 0.9rem;
             display: flex;
-            align-items: center;
-            gap: 1rem;
-            padding-bottom: 0.85rem;
-            border-bottom: 1px solid #e9ecf6;
+            align-items: flex-start;
+            gap: 0.8rem;
         }
 
+        /* Step number — only on real, ordered workflow steps. */
         .lf-section-badge {
             flex-shrink: 0;
-            width: 46px;
-            height: 46px;
-            border-radius: 13px;
+            width: 32px;
+            height: 32px;
+            margin-top: 0.1rem;
+            border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 1.1rem;
+            font-size: 0.95rem;
             font-weight: 800;
             color: #ffffff;
-            background: linear-gradient(135deg, var(--lf-primary) 0%, var(--lf-primary-2) 100%);
-            box-shadow: 0 6px 18px rgba(79, 70, 229, 0.30);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .lf-section-badge::before {
-            content: "";
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 40%;
-            background: linear-gradient(180deg, rgba(255,255,255,0.25) 0%, transparent 100%);
-            border-radius: 13px 13px 0 0;
-        }
-
-        .lf-section-kicker {
-            text-transform: uppercase;
-            letter-spacing: 0.09em;
-            font-size: 0.7rem;
-            font-weight: 700;
-            color: var(--lf-primary-2);
-            margin-bottom: 0.15rem;
-            opacity: 0.75;
+            background: var(--lf-primary);
         }
 
         .lf-section-head h2 {
             margin: 0;
+            padding: 0 !important;
             color: var(--lf-title);
-            font-size: 1.55rem;
-            line-height: 1.2;
-            letter-spacing: -0.015em;
+            font-size: 1.3rem;
+            line-height: 1.3;
+            letter-spacing: -0.01em;
             font-weight: 800;
         }
 
         /* ---------------------------------------------------------------
+           STATUS LINES (theme.status_line) — ✓ done, ⚠ check, ✕ failed, → next
+           --------------------------------------------------------------- */
+        .lf-status {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0.25rem 0.6rem;
+            padding: 0.6rem 0.9rem;
+            margin: 0.4rem 0 0.6rem;
+            border-radius: var(--lf-radius-sm);
+            border: 1px solid;
+            font-size: 0.93rem;
+        }
+        .lf-status-icon { font-weight: 800; }
+        .lf-status-title { font-weight: 700; }
+        .lf-status-detail { color: var(--lf-body); }
+        .lf-status-success { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+        .lf-status-warning { background: #fffbeb; border-color: #fcd34d; color: #78350f; }
+        .lf-status-error   { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+        .lf-status-next    { background: var(--lf-primary-soft); border-color: #c7d2fe; color: #3730a3; }
+        .lf-status-info    { background: #f8fafc; border-color: var(--lf-border); color: var(--lf-title); }
+
+        /* Small uppercase label above a group of related controls. */
+        .lf-group-label {
+            font-size: 0.78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--lf-muted);
+            margin: 0.9rem 0 0.35rem;
+        }
+
+        /* Legend chips (e.g. what "Location Empty" means). */
+        .lf-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem 0.9rem;
+            margin: 0.1rem 0 0.7rem;
+            font-size: 0.85rem;
+            color: var(--lf-body);
+        }
+        .lf-legend b { color: var(--lf-title); }
+
+        /* "Why were leads removed?" (theme.removal_breakdown) */
+        .lf-why {
+            margin: 0.8rem 0 1rem;
+            padding: 1rem 1.1rem 0.9rem;
+            border: 1px solid var(--lf-border);
+            border-radius: var(--lf-radius-sm);
+            background: #ffffff;
+        }
+        .lf-why-title {
+            font-weight: 800;
+            font-size: 1rem;
+            color: var(--lf-title);
+            margin-bottom: 0.75rem;
+        }
+        .lf-why-groups {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 0.9rem 1.6rem;
+        }
+        .lf-why-group-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            padding-bottom: 0.4rem;
+            margin-bottom: 0.2rem;
+            border-bottom: 2px solid var(--lf-border);
+            font-size: 0.78rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--lf-muted);
+        }
+        .lf-why-group-head b {
+            font-size: 0.95rem;
+            letter-spacing: 0;
+            color: var(--lf-title);
+            font-variant-numeric: tabular-nums;
+        }
+        .lf-why-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 90px 6.5rem;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.45rem 0;
+            border-bottom: 1px solid #eef0f6;
+        }
+        .lf-why-row:last-child { border-bottom: none; }
+        .lf-why-label {
+            font-weight: 700;
+            font-size: 0.92rem;
+            color: var(--lf-title);
+            line-height: 1.25;
+        }
+        .lf-why-label small {
+            display: block;
+            font-weight: 500;
+            font-size: 0.78rem;
+            color: var(--lf-muted);
+        }
+        .lf-why-bar {
+            height: 8px;
+            border-radius: 999px;
+            background: #eef0f6;
+            overflow: hidden;
+        }
+        .lf-why-bar span {
+            display: block;
+            height: 100%;
+            border-radius: 999px;
+            background: var(--lf-primary);
+        }
+        .lf-why-count {
+            text-align: right;
+            font-weight: 800;
+            font-size: 0.95rem;
+            color: var(--lf-title);
+            font-variant-numeric: tabular-nums;
+        }
+        .lf-why-row.lf-zero .lf-why-label,
+        .lf-why-row.lf-zero .lf-why-count { color: var(--lf-muted); font-weight: 600; }
+        .lf-why-row.lf-off .lf-why-label { color: var(--lf-muted); font-weight: 600; }
+        .lf-why-row.lf-off .lf-why-bar { background: none; }
+        .lf-why-row.lf-off .lf-why-count {
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--lf-muted);
+        }
+        .lf-why-total {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 0.8rem;
+            padding-top: 0.7rem;
+            border-top: 2px solid var(--lf-title);
+            font-weight: 800;
+            color: var(--lf-title);
+        }
+        .lf-why-total b { font-variant-numeric: tabular-nums; }
+
+        /* ---------------------------------------------------------------
            CARDS / PANELS / EXPANDERS
            --------------------------------------------------------------- */
-        .lf-inline-panel {
-            border: 1px solid #dfe4f2;
-            border-radius: 12px;
-            background: linear-gradient(135deg, #fbfcff 0%, #f7f8fe 100%);
-            padding: 0.9rem 1.1rem;
-            color: #2f3550;
-            margin: 0.25rem 0 1rem;
-            box-shadow: var(--lf-shadow-sm);
-        }
-
-        .lf-inline-panel ol {
-            margin: 0.5rem 0 0.2rem 1rem;
-        }
-
-        /* Info/stat card */
-        .lf-stat-card {
-            background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%);
-            border: 1px solid var(--lf-border);
-            border-radius: var(--lf-radius);
-            padding: 1rem 1.2rem;
-            box-shadow: var(--lf-shadow-sm);
-            transition: box-shadow 0.18s ease, transform 0.18s ease;
-        }
-        .lf-stat-card:hover {
-            box-shadow: var(--lf-shadow-md);
-            transform: translateY(-1px);
-        }
-
-        /* Global dedup info box */
-        .lf-dedup-box {
-            background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
-            border: 1px solid #86efac;
-            border-radius: 12px;
-            padding: 0.85rem 1.1rem;
-            margin: 0.5rem 0 1rem;
-        }
-
-        .lf-dedup-box.warn {
-            background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
-            border-color: #fbbf24;
-        }
-
-        .lf-dedup-box.info {
-            background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-            border-color: #93c5fd;
-        }
-
-        .upload-card {
-            border: 1px solid var(--lf-border);
-            border-radius: var(--lf-radius);
-            padding: 1rem 1.25rem;
-            background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%);
-            color: var(--lf-body);
-            font-weight: 600;
-            box-shadow: var(--lf-shadow-sm);
-            margin-bottom: 1rem;
-            border-left: 4px solid var(--lf-primary);
-        }
-
         [data-testid="stExpander"] {
-            border: 1px solid #dfe4f2 !important;
-            border-radius: var(--lf-radius) !important;
-            background: linear-gradient(135deg, #fbfcff 0%, #f9faff 100%) !important;
-            box-shadow: var(--lf-shadow-sm);
+            border: 1px solid var(--lf-border) !important;
+            border-radius: var(--lf-radius-sm) !important;
+            background: #ffffff !important;
             margin-bottom: 0.75rem;
             overflow: hidden;
-            transition: box-shadow 0.15s ease !important;
-        }
-
-        [data-testid="stExpander"]:hover {
-            box-shadow: var(--lf-shadow-md) !important;
         }
 
         [data-testid="stExpander"] summary {
             font-weight: 700 !important;
             color: var(--lf-title) !important;
-            padding: 0.75rem 1rem !important;
+            padding: 0.7rem 1rem !important;
         }
 
         [data-testid="stExpander"] summary:hover {
             color: var(--lf-primary) !important;
+            background: #f8f9fe;
         }
 
         [data-testid="stVerticalBlockBorderWrapper"] {
             border-radius: var(--lf-radius) !important;
         }
 
+        /* Table rows built from columns (e.g. "Your lists"): each row sits in its own box,
+           and the heading row gets the same side padding so the columns line up. */
+        div[class*="st-key-lf_row_"] {
+            border: 1px solid var(--lf-border);
+            border-radius: var(--lf-radius-sm);
+            background: #ffffff;
+            padding: 0.5rem 1rem;
+            transition: border-color 0.15s ease, background 0.15s ease;
+        }
+        div[class*="st-key-lf_row_"]:hover {
+            border-color: #c7d2fe;
+            background: #fbfbff;
+        }
+        div[class*="st-key-lf_rowhead_"] {
+            padding: 0 calc(1rem + 1px);
+        }
+
         /* ---------------------------------------------------------------
            FILE UPLOADERS
            --------------------------------------------------------------- */
-        .lf-upload-label {
-            font-weight: 700;
-            font-size: 0.92rem;
-            color: var(--lf-title);
-            margin-bottom: 0.2rem;
-            display: flex;
-            align-items: center;
-            gap: 0.4rem;
-        }
-
-        .lf-upload-required {
-            font-size: 0.68rem;
-            font-weight: 700;
-            color: var(--lf-primary);
-            background: var(--lf-primary-soft);
-            border-radius: 999px;
-            padding: 0.08rem 0.55rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-
-        .lf-upload-optional {
-            font-size: 0.68rem;
-            font-weight: 700;
-            color: var(--lf-muted);
-            background: #eef0f5;
-            border-radius: 999px;
-            padding: 0.08rem 0.55rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-
-        [data-testid="stFileUploaderDropzone"] svg {display: none;}
         [data-testid="stFileUploaderDropzone"] {
-            border: 2px dashed #c7cdea;
+            border: 2px dashed #9ea7c2;
             border-radius: 12px;
-            background: linear-gradient(135deg, #fbfcff 0%, #f7f8fe 100%);
-            transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+            background: #fbfbff;
+            padding: 1.4rem 1.2rem;
+            transition: border-color 0.15s ease, background 0.15s ease;
         }
         [data-testid="stFileUploaderDropzone"]:hover {
             border-color: var(--lf-primary);
-            background: #f0f1ff;
-            box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.07);
+            background: var(--lf-primary-soft);
         }
-        [data-testid="stFileUploaderDropzoneInstructions"] {padding-top: 0.5rem;}
-
-        /* Remove-file chip row */
-        .lf-file-chip {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.5rem;
-            margin-top: 0.4rem;
-            padding: 0.3rem 0.6rem;
-            background: #fbfcff;
-            border: 1px solid var(--lf-border);
-            border-radius: 10px;
+        [data-testid="stFileUploaderDropzoneInstructions"] {padding-top: 0.25rem;}
+        /* "Upload" is the main action of the upload step. */
+        [data-testid="stMain"] [data-testid="stFileUploader"] button[data-testid="stBaseButton-secondary"] {
+            background: var(--lf-primary) !important;
+            color: #ffffff !important;
+            border: 1px solid var(--lf-primary) !important;
+            font-weight: 700 !important;
         }
-
-        .lf-file-chip-name {
-            font-size: 0.82rem;
-            color: var(--lf-body);
-            font-weight: 600;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+        [data-testid="stMain"] [data-testid="stFileUploader"] button[data-testid="stBaseButton-secondary"] * {
+            color: #ffffff !important;
+        }
+        [data-testid="stMain"] [data-testid="stFileUploader"] button[data-testid="stBaseButton-secondary"]:hover {
+            background: var(--lf-primary-hover) !important;
         }
 
-    /* ---------------------------------------------------------------
-       FILE REMOVE BUTTON
-       --------------------------------------------------------------- */
+        /* Remove-file button next to an uploaded file: a clear red ✕. */
+        [data-testid="stFileUploader"] button[aria-label*="Remove"],
+        [data-testid="stFileUploader"] button[title*="Remove"] {
+            position: relative !important;
+            min-width: 25px !important;
+            width: 25px !important;
+            height: 25px !important;
+            min-height: 25px !important;
+            padding: 0 !important;
+            background: #ef4444 !important;
+            border: 1px solid #dc2626 !important;
+            border-radius: 6px !important;
+            color: transparent !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            box-shadow: none !important;
+        }
 
-    [data-testid="stFileUploader"] button[aria-label*="Remove"],
-    [data-testid="stFileUploader"] button[title*="Remove"] {
-        position: relative !important;
-        min-width: 25px !important;
-        width: 25px !important;
-        height: 25px !important;
-        min-height: 25px !important;
-        padding: 0 !important;
-        background: #ef4444 !important;
-        border: 1px solid #dc2626 !important;
-        border-radius: 6px !important;
-        color: transparent !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        box-shadow: none !important;
-    }
+        [data-testid="stFileUploader"] button[aria-label*="Remove"] svg,
+        [data-testid="stFileUploader"] button[title*="Remove"] svg {
+            display: none !important;
+        }
 
-    [data-testid="stFileUploader"] button[aria-label*="Remove"] svg,
-    [data-testid="stFileUploader"] button[title*="Remove"] svg {
-        display: none !important;
-    }
+        [data-testid="stFileUploader"] button[aria-label*="Remove"]::after,
+        [data-testid="stFileUploader"] button[title*="Remove"]::after {
+            content: "✕";
+            color: #ffffff !important;
+            font-size: 14px !important;
+            font-weight: 700 !important;
+            line-height: 1 !important;
+            position: absolute !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -52%) !important;
+            pointer-events: none !important;
+        }
 
-    [data-testid="stFileUploader"] button[aria-label*="Remove"]::after,
-    [data-testid="stFileUploader"] button[title*="Remove"]::after {
-        content: "✕";
-        color: #ffffff !important;
-        font-size: 14px !important;
-        font-weight: 700 !important;
-        line-height: 1 !important;
-        position: absolute !important;
-        top: 50% !important;
-        left: 50% !important;
-        transform: translate(-50%, -52%) !important;
-        pointer-events: none !important;
-    }
-
-    [data-testid="stFileUploader"] button[aria-label*="Remove"]:hover,
-    [data-testid="stFileUploader"] button[title*="Remove"]:hover {
-        background: #dc2626 !important;
-        border-color: #b91c1c !important;
-    }
+        [data-testid="stFileUploader"] button[aria-label*="Remove"]:hover,
+        [data-testid="stFileUploader"] button[title*="Remove"]:hover {
+            background: #dc2626 !important;
+            border-color: #b91c1c !important;
+        }
 
         /* ---------------------------------------------------------------
            ALERTS / METRICS / TABLES
            --------------------------------------------------------------- */
         [data-testid="stAlert"] {
-            border-radius: 12px;
-            border: 1px solid #d7ddef;
-            box-shadow: var(--lf-shadow-sm);
+            border-radius: var(--lf-radius-sm);
         }
 
         [data-testid="stMetric"] {
             border: 1px solid var(--lf-border);
-            border-radius: 12px;
-            background: linear-gradient(135deg, #ffffff 0%, #fafbff 100%);
-            padding: 0.85rem 1rem;
-            box-shadow: var(--lf-shadow-sm);
-            transition: box-shadow 0.18s ease, transform 0.18s ease;
-            position: relative;
-            overflow: hidden;
-        }
-
-        [data-testid="stMetric"]::before {
-            content: "";
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 3px;
-            background: linear-gradient(90deg, var(--lf-primary), var(--lf-primary-2));
-            border-radius: 12px 12px 0 0;
-        }
-
-        [data-testid="stMetric"]:hover {
-            box-shadow: var(--lf-shadow-md);
-            transform: translateY(-2px);
+            border-radius: var(--lf-radius-sm);
+            background: #ffffff;
+            padding: 0.75rem 1rem;
         }
 
         [data-testid="stMetricLabel"] {
             color: var(--lf-muted) !important;
             font-weight: 600 !important;
-            font-size: 0.8rem !important;
+            font-size: 0.82rem !important;
         }
 
         [data-testid="stMetricValue"] {
             color: var(--lf-title) !important;
             font-weight: 800 !important;
+            font-variant-numeric: tabular-nums;
         }
 
         [data-testid="stDataFrame"] {
-            border: 1px solid #dde3f0;
-            border-radius: 12px;
+            border: 1px solid var(--lf-border);
+            border-radius: var(--lf-radius-sm);
             overflow: hidden;
-            box-shadow: var(--lf-shadow-sm);
         }
 
         /* ---------------------------------------------------------------
-           BUTTONS  (unified button system)
+           BUTTONS — one clear hierarchy everywhere:
+             primary   filled      the one main action of a section
+             secondary white+border other useful actions
+             tertiary  text link   help / minor actions
+           The key prefix sets the action colour (Streamlit adds an
+           st-key-<key> class to the button's container):
+             go_ start/continue (brand) · dl_ download (green) · save_ save (blue)
+             del_ delete (red) · retry_ retry (amber) · view_ preview (teal)
+             reset_ clear/reset (slate)
+           Filled colours keep white text at 4.5:1 contrast or better.
            --------------------------------------------------------------- */
-        .stButton button, [data-testid="stDownloadButton"] button {
-            border-radius: 10px !important;
+        [class*="st-key-go_"]    { --lf-btn-a: #4f46e5; --lf-btn-hover: #4338ca; --lf-btn-soft: #eef0ff; }
+        [class*="st-key-dl_"]    { --lf-btn-a: #047857; --lf-btn-hover: #065f46; --lf-btn-soft: #ecfdf5; }
+        [class*="st-key-save_"]  { --lf-btn-a: #1d4ed8; --lf-btn-hover: #1e40af; --lf-btn-soft: #eff6ff; }
+        [class*="st-key-del_"]   { --lf-btn-a: #b91c1c; --lf-btn-hover: #991b1b; --lf-btn-soft: #fef2f2; }
+        [class*="st-key-retry_"] { --lf-btn-a: #b45309; --lf-btn-hover: #92400e; --lf-btn-soft: #fffbeb; }
+        [class*="st-key-view_"]  { --lf-btn-a: #0e7490; --lf-btn-hover: #155e75; --lf-btn-soft: #ecfeff; }
+        [class*="st-key-reset_"] { --lf-btn-a: #334155; --lf-btn-hover: #1e293b; --lf-btn-soft: #f1f5f9; }
+
+        :is([data-testid="stMain"], [role="dialog"])
+            :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"]) button {
+            border-radius: 8px !important;
             font-weight: 700 !important;
-            min-height: 2.6rem;
+            min-height: 2.5rem;
             font-size: 0.92rem !important;
-            transition: all 0.18s ease-in-out !important;
-            border: 1px solid transparent !important;
-            letter-spacing: 0.01em;
+            transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
         }
 
-        /* Primary CTAs */
-        .stButton button[kind="primary"],
-        [data-testid="stDownloadButton"] button[kind="primary"] {
-            background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
+        /* Primary */
+        :is([data-testid="stMain"], [role="dialog"])
+            button:is([kind="primary"], [kind="primaryFormSubmit"]) {
+            background: var(--lf-btn-a, var(--lf-primary)) !important;
             color: #ffffff !important;
-            box-shadow: var(--lf-shadow-primary) !important;
-            border: 1px solid transparent !important;
-        }
-
-        .stButton button[kind="primary"]:hover,
-        [data-testid="stDownloadButton"] button[kind="primary"]:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 14px 28px rgba(79, 70, 229, 0.35) !important;
-            filter: brightness(1.05);
-        }
-
-        .stButton button[kind="primary"]:active,
-        [data-testid="stDownloadButton"] button[kind="primary"]:active {
-            transform: translateY(0);
+            border: 1px solid var(--lf-btn-a, var(--lf-primary)) !important;
             box-shadow: var(--lf-shadow-primary) !important;
         }
+        :is([data-testid="stMain"], [role="dialog"])
+            button:is([kind="primary"], [kind="primaryFormSubmit"]):hover {
+            background: var(--lf-btn-hover, var(--lf-primary-hover)) !important;
+            border-color: var(--lf-btn-hover, var(--lf-primary-hover)) !important;
+        }
 
-        /* Secondary buttons */
-        .stButton button[kind="secondary"],
-        [data-testid="stDownloadButton"] button[kind="secondary"] {
+        /* Secondary */
+        :is([data-testid="stMain"], [role="dialog"])
+            button:is([kind="secondary"], [kind="secondaryFormSubmit"]) {
             background: #ffffff !important;
-            color: var(--lf-primary) !important;
-            border: 1.5px solid var(--lf-primary) !important;
+            color: var(--lf-btn-a, var(--lf-title)) !important;
+            border: 1px solid var(--lf-btn-a, var(--lf-input-border)) !important;
             box-shadow: none !important;
         }
+        :is([data-testid="stMain"], [role="dialog"])
+            button:is([kind="secondary"], [kind="secondaryFormSubmit"]):hover {
+            background: var(--lf-btn-soft, var(--lf-primary-soft)) !important;
+            color: var(--lf-btn-hover, var(--lf-primary)) !important;
+            border-color: var(--lf-btn-hover, var(--lf-primary)) !important;
+        }
 
-        .stButton button[kind="secondary"]:hover,
-        [data-testid="stDownloadButton"] button[kind="secondary"]:hover {
-            background: var(--lf-primary-soft) !important;
+        /* Tertiary: text link style */
+        :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"] {
             color: var(--lf-primary) !important;
-            border-color: var(--lf-primary) !important;
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
+            min-height: 2.25rem;
+            font-weight: 700 !important;
+        }
+        :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"]:hover {
+            color: var(--lf-primary-hover) !important;
+            text-decoration: underline;
         }
 
-
-
-        /* "How it works" pill */
-        div[data-testid="stButton"] div.st-key-how_it_works_btn button {
-            min-width: 130px !important;
-            height: 40px !important;
-            min-height: 40px !important;
-            padding: 0 18px !important;
-            border-radius: 10px !important;
-            white-space: nowrap !important;
-            background: #ffffff !important;
-            color: var(--lf-primary) !important;
-            border: 1.5px solid var(--lf-primary) !important;
-            box-shadow: var(--lf-shadow-sm) !important;
-        }
-
-        div[data-testid="stButton"] div.st-key-how_it_works_btn button:hover {
-            background: var(--lf-primary-soft) !important;
-            border-color: var(--lf-primary) !important;
-        }
-
-        /* ---------------------------------------------------------------
-           BUTTON COLOURS BY ACTION
-           A button's colour says what it does, picked by its key prefix
-           (Streamlit adds an st-key-<key> class to the button's container):
-             go_     start / continue   indigo (brand)
-             dl_     download           green
-             save_   save to database   blue
-             del_    delete             red
-             retry_  retry              amber
-             view_   preview / info     teal outline
-             reset_  clear / reset      grey outline
-             logout_ log out            soft red (sidebar)
-           Every fill keeps white text at 4.5:1 contrast or better.
-           --------------------------------------------------------------- */
-        [class*="st-key-go_"] {
-            --lf-btn-a: #4f46e5; --lf-btn-b: #6366f1; --lf-btn-glow: rgba(79, 70, 229, 0.30);
-        }
-        [class*="st-key-dl_"] {
-            --lf-btn-a: #065f46; --lf-btn-b: #047857; --lf-btn-glow: rgba(4, 120, 87, 0.30);
-        }
-        [class*="st-key-save_"] {
-            --lf-btn-a: #1d4ed8; --lf-btn-b: #2563eb; --lf-btn-glow: rgba(37, 99, 235, 0.30);
-        }
-        [class*="st-key-del_"] {
-            --lf-btn-a: #b91c1c; --lf-btn-b: #dc2626; --lf-btn-glow: rgba(220, 38, 38, 0.30);
-        }
-        [class*="st-key-retry_"] {
-            --lf-btn-a: #b45309; --lf-btn-b: #c2410c; --lf-btn-glow: rgba(180, 83, 9, 0.30);
-        }
-        [class*="st-key-view_"], .st-key-how_it_works_btn {
-            --lf-btn-a: #0e7490; --lf-btn-soft: #ecfeff;
-        }
-        [class*="st-key-reset_"] {
-            --lf-btn-a: #475569; --lf-btn-border: #94a3b8; --lf-btn-soft: #f1f5f9;
-        }
-
-        /* Filled buttons */
-        .stElementContainer:is([class*="st-key-go_"], [class*="st-key-dl_"], [class*="st-key-save_"],
-                               [class*="st-key-del_"], [class*="st-key-retry_"])
-            button[data-testid^="stBaseButton"] {
-            background: linear-gradient(135deg, var(--lf-btn-a), var(--lf-btn-b)) !important;
-            color: #ffffff !important;
-            border: 1px solid transparent !important;
-            box-shadow: 0 6px 18px var(--lf-btn-glow) !important;
-        }
-        .stElementContainer:is([class*="st-key-go_"], [class*="st-key-dl_"], [class*="st-key-save_"],
-                               [class*="st-key-del_"], [class*="st-key-retry_"])
-            button[data-testid^="stBaseButton"]:hover {
-            transform: translateY(-2px);
-            filter: brightness(1.08);
-            box-shadow: 0 12px 26px var(--lf-btn-glow) !important;
-        }
-
-        /* Outline buttons */
-        .stElementContainer:is([class*="st-key-view_"], [class*="st-key-reset_"], .st-key-how_it_works_btn)
-            button[data-testid^="stBaseButton"] {
-            background: #ffffff !important;
-            color: var(--lf-btn-a) !important;
-            border: 1.5px solid var(--lf-btn-border, var(--lf-btn-a)) !important;
-            box-shadow: none !important;
-        }
-        .stElementContainer:is([class*="st-key-view_"], [class*="st-key-reset_"], .st-key-how_it_works_btn)
-            button[data-testid^="stBaseButton"]:hover {
-            background: var(--lf-btn-soft) !important;
-            border-color: var(--lf-btn-a) !important;
+        /* Labels take the button's own text colour. Without this, the page-wide
+           text rules (main area and sidebar) recolour the <p> inside each button. */
+        :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
+            button[data-testid^="stBaseButton"] * {
+            color: inherit !important;
         }
 
         /* Log out, on the dark sidebar */
@@ -1205,24 +1131,6 @@ def inject_theme():
             border-color: rgba(248, 113, 113, 0.7) !important;
         }
 
-        /* Labels take the button's own text colour. Without this, the page-wide
-           text rules (main area and sidebar) recolour the <p> inside each button,
-           which left "Log in" dark-on-indigo and "Log out" grey-on-navy. */
-        :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
-            button[data-testid^="stBaseButton"] * {
-            color: inherit !important;
-        }
-
-        /* Form submit buttons (Log in, Create account) use the brand fill like other primaries. */
-        [data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"] {
-            background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
-            color: #ffffff !important;
-            border: 1px solid transparent !important;
-            border-radius: 10px !important;
-            font-weight: 700 !important;
-            box-shadow: var(--lf-shadow-primary) !important;
-        }
-
         /* Disabled: plainly grey but still readable, whatever the action colour. */
         .stElementContainer :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
             button[data-testid^="stBaseButton"]:disabled {
@@ -1230,35 +1138,46 @@ def inject_theme():
             color: #4b5563 !important;
             border: 1px solid #d1d5db !important;
             box-shadow: none !important;
-            transform: none !important;
-            filter: none !important;
             opacity: 1 !important;
             cursor: not-allowed !important;
         }
 
-        /* ---------------------------------------------------------------
-           TABS
-           --------------------------------------------------------------- */
-        [data-testid="stTabs"] [role="tablist"] {
-            gap: 0.5rem;
-            border-bottom: none;
-            flex-wrap: wrap;
-            padding-bottom: 0.25rem;
+        /* Visible keyboard focus on every interactive control. */
+        button:focus-visible,
+        a:focus-visible,
+        summary:focus-visible,
+        [role="tab"]:focus-visible,
+        [data-testid="stFileUploaderDropzone"]:focus-within {
+            outline: none !important;
+            box-shadow: var(--lf-focus) !important;
         }
 
-        [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+        /* ---------------------------------------------------------------
+           TABS — the selected tab is filled and underlined, so it's obvious
+           which one you're viewing (not just by colour).
+           --------------------------------------------------------------- */
+        [data-testid="stTabs"] [role="tablist"] {
+            gap: 0.4rem;
+            border-bottom: 1px solid var(--lf-border);
+            flex-wrap: wrap;
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.4rem;
+        }
+
+        [data-testid="stTabs"] [data-baseweb="tab-highlight"],
+        [data-testid="stTabs"] [data-baseweb="tab-border"] {
             display: none !important;
         }
 
         [data-testid="stTabs"] [role="tab"] {
-            border: 1.5px solid var(--lf-border);
-            border-radius: 10px;
+            border: 1px solid var(--lf-input-border);
+            border-radius: 8px;
             font-weight: 700;
-            font-size: 0.875rem;
-            color: var(--lf-muted);
-            padding: 0.6rem 1.1rem;
+            font-size: 0.9rem;
+            color: var(--lf-body);
+            padding: 0.5rem 1rem;
             background: #ffffff;
-            transition: all 0.18s ease-in-out;
+            transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
         }
 
         [data-testid="stTabs"] [role="tab"]:hover {
@@ -1269,14 +1188,19 @@ def inject_theme():
 
         [data-testid="stTabs"] [aria-selected="true"] {
             color: #ffffff !important;
-            background: linear-gradient(135deg, var(--lf-primary), var(--lf-primary-2)) !important;
-            border: 1.5px solid var(--lf-primary) !important;
-            box-shadow: var(--lf-shadow-primary);
+            background: var(--lf-primary) !important;
+            border: 1px solid var(--lf-primary) !important;
+            box-shadow: inset 0 -3px 0 #312e81;
         }
 
         /* ---------------------------------------------------------------
-           FORM CONTROLS (radio / checkbox / select)
+           FORM CONTROLS — visible borders so every input looks like an input
            --------------------------------------------------------------- */
+        :is([data-testid="stMain"], [role="dialog"]) [data-testid="stWidgetLabel"] p {
+            font-weight: 700 !important;
+            color: var(--lf-title) !important;
+        }
+
         [data-testid="stRadio"] label,
         [data-testid="stCheckbox"] label {
             font-weight: 600 !important;
@@ -1289,7 +1213,7 @@ def inject_theme():
 
         div[data-baseweb="radio"] > div:first-child,
         [data-testid="stCheckbox"] span[data-baseweb="checkbox"] > div:first-child {
-            border-color: #c7cdea !important;
+            border-color: var(--lf-input-border) !important;
         }
 
         div[data-baseweb="radio"] input:checked + div,
@@ -1298,31 +1222,47 @@ def inject_theme():
             border-color: var(--lf-primary) !important;
         }
 
-        [data-baseweb="select"] > div {
-            border-radius: 10px !important;
-            border-color: var(--lf-border) !important;
+        /* The field itself: text inputs, text areas, number inputs, dropdowns and multiselects.
+           Streamlit draws these borders in the (white) secondary background colour, so without
+           this they're invisible on white cards. */
+        :is([data-testid="stMain"], [role="dialog"]) :is(
+            [data-testid="stTextInputRootElement"],
+            [data-testid="stTextAreaRootElement"],
+            [data-testid="stNumberInputContainer"],
+            [data-testid="stSelectbox"] > div > div[role="group"],
+            [data-testid="stMultiSelect"] > div > div[role="group"]
+        ) {
+            border: 1px solid var(--lf-input-border) !important;
+            border-radius: 8px !important;
+            background: #ffffff !important;
             transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
         }
 
-        [data-baseweb="select"] > div:hover {
+        :is([data-testid="stMain"], [role="dialog"]) :is(
+            [data-testid="stTextInputRootElement"],
+            [data-testid="stTextAreaRootElement"],
+            [data-testid="stNumberInputContainer"],
+            [data-testid="stSelectbox"] > div > div[role="group"],
+            [data-testid="stMultiSelect"] > div > div[role="group"]
+        ):hover {
             border-color: var(--lf-primary) !important;
         }
 
-        [data-baseweb="select"] > div:focus-within {
+        :is([data-testid="stMain"], [role="dialog"]) :is(
+            [data-testid="stTextInputRootElement"],
+            [data-testid="stTextAreaRootElement"],
+            [data-testid="stNumberInputContainer"],
+            [data-testid="stSelectbox"] > div > div[role="group"],
+            [data-testid="stMultiSelect"] > div > div[role="group"]
+        ):focus-within {
             border-color: var(--lf-primary) !important;
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
+            box-shadow: var(--lf-focus) !important;
         }
 
-        /* Text inputs */
-        [data-testid="stTextInput"] input {
-            border-radius: 10px !important;
-            border-color: var(--lf-border) !important;
-            transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
-        }
-
-        [data-testid="stTextInput"] input:focus {
-            border-color: var(--lf-primary) !important;
-            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1) !important;
+        [data-testid="stMain"] input::placeholder,
+        [data-testid="stMain"] textarea::placeholder {
+            color: #8a90a4 !important;
+            opacity: 1;
         }
 
         /* ---------------------------------------------------------------
@@ -1338,8 +1278,9 @@ def inject_theme():
             to { opacity: 1; }
         }
 
-        /* Clicks are blocked at once, but the dimmed overlay only fades in if the
-           rerun takes longer than ~0.4s, so quick interactions don't flash the screen. */
+        /* Clicks are blocked at once, but the veil only fades in if the rerun takes
+           longer than ~0.4s, so quick interactions don't flash the screen. The veil is
+           light and unblurred so progress messages underneath stay readable. */
         [data-testid="stApp"][data-test-script-state="running"]::before {
             content: "";
             position: fixed;
@@ -1347,9 +1288,7 @@ def inject_theme():
             left: 0;
             width: 100vw;
             height: 100vh;
-            background: rgba(10, 12, 28, 0.55);
-            backdrop-filter: blur(5px);
-            -webkit-backdrop-filter: blur(5px);
+            background: rgba(247, 248, 252, 0.45);
             z-index: 999990;
             pointer-events: all !important;
             cursor: wait !important;
@@ -1362,17 +1301,15 @@ def inject_theme():
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 58px;
-            height: 58px;
-            border: 4px solid rgba(255, 255, 255, 0.12);
+            width: 44px;
+            height: 44px;
+            border: 4px solid rgba(79, 70, 229, 0.15);
             border-top: 4px solid var(--lf-primary);
-            border-right: 4px solid var(--lf-primary-2);
             border-radius: 50%;
             z-index: 999999;
             animation: lf-overlay-in 0.2s ease 0.4s both,
                        global-spinner-spin 0.75s cubic-bezier(0.4, 0, 0.2, 1) infinite;
             pointer-events: none !important;
-            box-shadow: 0 0 30px rgba(79, 70, 229, 0.4), 0 12px 30px rgba(0, 0, 0, 0.35);
         }
 
         [data-testid="stApp"][data-test-script-state="running"] button,
@@ -1394,8 +1331,8 @@ def inject_theme():
 
         [data-testid="stSpinner"] {
             padding: 0.65rem 1rem;
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-            border: 1px solid #e2e8f0;
+            background: var(--lf-primary-soft);
+            border: 1px solid #c7d2fe;
             border-radius: 10px;
             margin: 0.5rem 0;
             font-weight: 500;
@@ -1412,42 +1349,13 @@ def inject_theme():
         }
 
         /* ---------------------------------------------------------------
-           BADGE / PILL ELEMENTS
-           --------------------------------------------------------------- */
-        .lf-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.3rem;
-            padding: 0.2rem 0.6rem;
-            border-radius: 999px;
-            font-size: 0.72rem;
-            font-weight: 700;
-            letter-spacing: 0.02em;
-        }
-
-        .lf-badge-success {
-            background: var(--lf-success-soft);
-            color: var(--lf-success);
-        }
-
-        .lf-badge-primary {
-            background: var(--lf-primary-soft);
-            color: var(--lf-primary);
-        }
-
-        .lf-badge-warning {
-            background: var(--lf-warning-soft);
-            color: var(--lf-warning);
-        }
-
-        /* ---------------------------------------------------------------
            SECTION SUBTITLE / HELP TEXT
            --------------------------------------------------------------- */
         .lf-section-sub {
             color: var(--lf-body);
             font-size: 0.93rem;
             font-weight: 500;
-            margin-top: 0.3rem;
+            margin-top: 0.2rem;
             line-height: 1.45;
         }
 
@@ -1472,7 +1380,6 @@ def inject_theme():
             background: var(--lf-surface);
             border: 1px solid var(--lf-border);
             border-radius: var(--lf-radius);
-            box-shadow: var(--lf-shadow-sm);
         }
 
         .lf-step {
@@ -1510,6 +1417,8 @@ def inject_theme():
             color: #ffffff;
             box-shadow: 0 0 0 4px var(--lf-primary-glow);
         }
+
+        .lf-step.active .lf-step-label { color: var(--lf-primary); }
 
         .lf-step-text {
             display: flex;
@@ -1585,26 +1494,6 @@ def inject_theme():
             font-weight: 600;
         }
 
-        /* ---------------------------------------------------------------
-           MOTION — short, subtle entrance effects. Streamlit keeps unchanged
-           elements mounted across reruns, so these play when content first
-           appears, not on every click.
-           --------------------------------------------------------------- */
-        @keyframes lf-fade-up {
-            from { opacity: 0; transform: translateY(6px); }
-            to { opacity: 1; transform: none; }
-        }
-
-        .lf-section-head,
-        .lf-stepper,
-        .lf-empty,
-        .lf-note,
-        [data-testid="stMetric"],
-        [data-testid="stAlert"],
-        [data-testid="stExpander"] {
-            animation: lf-fade-up 0.28s ease-out both;
-        }
-
         @media (prefers-reduced-motion: reduce) {
             *, *::before, *::after {
                 animation-duration: 0.01ms !important;
@@ -1637,17 +1526,16 @@ def inject_theme():
             background: var(--lf-surface);
             border: 1px solid var(--lf-border);
             border-radius: var(--lf-radius);
-            padding: 0.35rem 1.6rem 1.5rem;
-            margin-bottom: 1.1rem;
-            box-shadow: var(--lf-shadow-sm);
+            padding: 0.35rem 1.5rem 1.4rem;
+            margin-bottom: 1rem;
         }
 
         div[class*="st-key-lf_card_"] .lf-section-head {
-            margin-top: 1.1rem;
+            margin-top: 1rem;
         }
 
         div[class*="st-key-lf_subcard_"] {
-            background: #f7f8fd;
+            background: #f7f8fc;
             border: 1px solid #e3e7f3;
             border-radius: var(--lf-radius-sm);
             padding: 0.25rem 1.2rem 1.1rem;
@@ -1657,59 +1545,28 @@ def inject_theme():
             margin-top: 0.8rem;
         }
 
-        /* Page titles ("## ..." on Database / Manage Users): largest heading on the page. */
-        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stHeadingWithActionElements"] > h2 {
-            color: #1e1b4b;
-            font-size: 2rem;
-            font-weight: 800;
-            letter-spacing: -0.02em;
-            margin: 0.4rem 0 0.2rem;
-        }
-
-        /* Section titles: one step below page titles, darker and heavier than body text.
-           Listed after the page-title rule (same specificity) so it wins inside section heads. */
+        /* Section titles inside cards. */
         [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 {
-            color: #1e1b4b;
-            font-size: 1.6rem;
+            color: var(--lf-title);
+            font-size: 1.3rem;
             font-weight: 800;
             margin: 0;
         }
 
         /* Sub-headings inside a section: smaller, with an accent bar. */
         [data-testid="stAppViewContainer"] div[class*="st-key-lf_card_"] [data-testid="stHeadingWithActionElements"] > h3 {
-            font-size: 1.12rem;
+            font-size: 1.05rem;
             font-weight: 800;
             color: var(--lf-title);
-            border-left: 4px solid var(--lf-primary);
-            padding: 0.05rem 0 0.05rem 0.65rem;
+            padding: 0;
             margin: 1rem 0 0.35rem;
         }
 
         @media (max-width: 640px) {
             div[class*="st-key-lf_card_"] { padding: 0.2rem 0.9rem 1rem; }
             div[class*="st-key-lf_subcard_"] { padding: 0.2rem 0.75rem 0.9rem; }
-            [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stHeadingWithActionElements"] > h2 { font-size: 1.6rem; }
-            [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.3rem; }
-        }
-
-        @media (min-width: 641px) and (max-width: 900px) {
-            [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.4rem; }
-        }
-
-        @media (max-width: 900px) {
-            .lf-topbar {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            .lf-section-head h2 {
-                font-size: 1.35rem;
-            }
-            [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
-                padding-top: 4.75rem;
-            }
-            .lf-brand {
-                font-size: 2.2rem;
-            }
+            [data-testid="stAppViewContainer"] [data-testid="stMain"] h1.lf-page-title { font-size: 1.5rem; }
+            [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.15rem; }
         }
         </style>
         """,

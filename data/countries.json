@@ -2562,6 +2562,640 @@
               "rheinland pfalz",
               "saarland"
           ]
+      },
+      "Ghana": {
+          "aliases": [],
+          "states": []
+      },
+      "Greece": {
+          "aliases": [],
+          "states": []
+      },
+      "Grenada": {
+          "aliases": [],
+          "states": []
+      },
+      "Guatemala": {
+          "aliases": [],
+          "states": []
+      },
+      "Guinea": {
+          "aliases": [],
+          "states": []
+      },
+      "Guinea-Bissau": {
+          "aliases": [],
+          "states": []
+      },
+      "Guyana": {
+          "aliases": [],
+          "states": []
+      },
+      "Haiti": {
+          "aliases": [],
+          "states": []
+      },
+      "Honduras": {
+          "aliases": [],
+          "states": []
+      },
+      "Hong Kong": {
+          "aliases": [],
+          "states": []
+      },
+      "Hungary": {
+          "aliases": [],
+          "states": []
+      },
+      "Iceland": {
+          "aliases": [],
+          "states": []
+      },
+      "India": {
+          "aliases": [
+              "bharat"
+          ],
+          "states": [
+              "maharashtra",
+              "karnataka",
+              "tamil nadu",
+              "gujarat",
+              "rajasthan",
+              "uttar pradesh",
+              "west bengal",
+              "telangana",
+              "andhra pradesh",
+              "kerala",
+              "madhya pradesh",
+              "bihar",
+              "odisha",
+              "haryana",
+              "assam",
+              "jharkhand",
+              "chhattisgarh",
+              "uttarakhand",
+              "himachal pradesh",
+              "goa"
+          ]
+      },
+      "Indonesia": {
+          "aliases": [],
+          "states": []
+      },
+      "Iran": {
+          "aliases": [],
+          "states": []
+      },
+      "Ireland": {
+          "aliases": [
+              "republic of ireland",
+              "eire"
+          ],
+          "states": []
+      },
+      "Israel": {
+          "aliases": [],
+          "states": []
+      },
+      "Italy": {
+          "aliases": [
+              "italia"
+          ],
+          "states": [
+              "lombardy",
+              "lombardia",
+              "tuscany",
+              "toscana",
+              "sicily",
+              "sicilia",
+              "sardinia",
+              "sardegna",
+              "piedmont",
+              "piemonte",
+              "veneto",
+              "emilia romagna",
+              "lazio",
+              "campania",
+              "puglia",
+              "apulia",
+              "liguria",
+              "calabria"
+          ]
+      },
+      "Ivory Coast": {
+          "aliases": [
+              "cote d ivoire",
+              "cote divoire"
+          ],
+          "states": []
+      },
+      "Jamaica": {
+          "aliases": [],
+          "states": []
+      },
+      "Japan": {
+          "aliases": [],
+          "states": [
+              "hokkaido",
+              "okinawa",
+              "honshu",
+              "kyushu"
+          ]
+      },
+      "Kazakhstan": {
+          "aliases": [],
+          "states": []
+      },
+      "Kenya": {
+          "aliases": [],
+          "states": []
+      },
+      "Kiribati": {
+          "aliases": [],
+          "states": []
+      },
+      "Kosovo": {
+          "aliases": [],
+          "states": []
+      },
+      "Kyrgyzstan": {
+          "aliases": [],
+          "states": []
+      },
+      "Laos": {
+          "aliases": [],
+          "states": []
+      },
+      "Latvia": {
+          "aliases": [],
+          "states": []
+      },
+      "Lesotho": {
+          "aliases": [],
+          "states": []
+      },
+      "Liberia": {
+          "aliases": [],
+          "states": []
+      },
+      "Liechtenstein": {
+          "aliases": [],
+          "states": []
+      },
+      "Lithuania": {
+          "aliases": [],
+          "states": []
+      },
+      "Luxembourg": {
+          "aliases": [],
+          "states": []
+      },
+      "Macau": {
+          "aliases": [
+              "macao"
+          ],
+          "states": []
+      },
+      "Madagascar": {
+          "aliases": [],
+          "states": []
+      },
+      "Malawi": {
+          "aliases": [],
+          "states": []
+      },
+      "Malaysia": {
+          "aliases": [],
+          "states": [
+              "selangor",
+              "johor",
+              "penang",
+              "sabah",
+              "sarawak",
+              "perak",
+              "kedah",
+              "kelantan",
+              "pahang",
+              "terengganu",
+              "negeri sembilan",
+              "melaka",
+              "malacca"
+          ]
+      },
+      "Maldives": {
+          "aliases": [],
+          "states": []
+      },
+      "Mali": {
+          "aliases": [],
+          "states": []
+      },
+      "Malta": {
+          "aliases": [],
+          "states": []
+      },
+      "Marshall Islands": {
+          "aliases": [],
+          "states": []
+      },
+      "Mauritania": {
+          "aliases": [],
+          "states": []
+      },
+      "Mauritius": {
+          "aliases": [],
+          "states": []
+      },
+      "Mexico": {
+          "aliases": [],
+          "states": [
+              "jalisco",
+              "nuevo leon",
+              "baja california",
+              "chihuahua",
+              "sonora",
+              "coahuila",
+              "tamaulipas",
+              "veracruz",
+              "oaxaca",
+              "yucatan",
+              "quintana roo",
+              "puebla",
+              "guanajuato",
+              "sinaloa",
+              "chiapas",
+              "michoacan"
+          ]
+      },
+      "Micronesia": {
+          "aliases": [],
+          "states": []
+      },
+      "Moldova": {
+          "aliases": [],
+          "states": []
+      },
+      "Monaco": {
+          "aliases": [],
+          "states": []
+      },
+      "Mongolia": {
+          "aliases": [],
+          "states": []
+      },
+      "Montenegro": {
+          "aliases": [],
+          "states": []
+      },
+      "Mozambique": {
+          "aliases": [],
+          "states": []
+      },
+      "Myanmar": {
+          "aliases": [
+              "burma"
+          ],
+          "states": []
+      },
+      "Namibia": {
+          "aliases": [],
+          "states": []
+      },
+      "Nauru": {
+          "aliases": [],
+          "states": []
+      },
+      "Nepal": {
+          "aliases": [],
+          "states": []
+      },
+      "Netherlands": {
+          "aliases": [
+              "holland",
+              "the netherlands"
+          ],
+          "states": [
+              "north holland",
+              "noord holland",
+              "south holland",
+              "zuid holland",
+              "north brabant",
+              "noord brabant",
+              "gelderland",
+              "friesland",
+              "overijssel",
+              "flevoland"
+          ]
+      },
+      "New Zealand": {
+          "aliases": [],
+          "states": []
+      },
+      "Nicaragua": {
+          "aliases": [],
+          "states": []
+      },
+      "Niger": {
+          "aliases": [],
+          "states": []
+      },
+      "Nigeria": {
+          "aliases": [],
+          "states": []
+      },
+      "North Korea": {
+          "aliases": [
+              "korea north",
+              "dprk"
+          ],
+          "states": []
+      },
+      "North Macedonia": {
+          "aliases": [
+              "macedonia"
+          ],
+          "states": []
+      },
+      "Norway": {
+          "aliases": [],
+          "states": []
+      },
+      "Pakistan": {
+          "aliases": [],
+          "states": [
+              "punjab",
+              "sindh",
+              "khyber pakhtunkhwa",
+              "kpk",
+              "balochistan",
+              "baluchistan",
+              "gilgit baltistan",
+              "azad kashmir",
+              "islamabad capital territory"
+          ]
+      },
+      "Palau": {
+          "aliases": [],
+          "states": []
+      },
+      "Panama": {
+          "aliases": [],
+          "states": []
+      },
+      "Papua New Guinea": {
+          "aliases": [],
+          "states": []
+      },
+      "Paraguay": {
+          "aliases": [],
+          "states": []
+      },
+      "Peru": {
+          "aliases": [],
+          "states": []
+      },
+      "Philippines": {
+          "aliases": [],
+          "states": [
+              "metro manila"
+          ]
+      },
+      "Poland": {
+          "aliases": [],
+          "states": []
+      },
+      "Portugal": {
+          "aliases": [],
+          "states": []
+      },
+      "Puerto Rico": {
+          "aliases": [],
+          "states": []
+      },
+      "Romania": {
+          "aliases": [],
+          "states": []
+      },
+      "Russia": {
+          "aliases": [
+              "russian federation"
+          ],
+          "states": []
+      },
+      "Rwanda": {
+          "aliases": [],
+          "states": []
+      },
+      "Saint Kitts and Nevis": {
+          "aliases": [],
+          "states": []
+      },
+      "Saint Lucia": {
+          "aliases": [],
+          "states": []
+      },
+      "Saint Vincent and the Grenadines": {
+          "aliases": [],
+          "states": []
+      },
+      "Samoa": {
+          "aliases": [],
+          "states": []
+      },
+      "San Marino": {
+          "aliases": [],
+          "states": []
+      },
+      "Sao Tome and Principe": {
+          "aliases": [],
+          "states": []
+      },
+      "Senegal": {
+          "aliases": [],
+          "states": []
+      },
+      "Serbia": {
+          "aliases": [],
+          "states": []
+      },
+      "Seychelles": {
+          "aliases": [],
+          "states": []
+      },
+      "Sierra Leone": {
+          "aliases": [],
+          "states": []
+      },
+      "Singapore": {
+          "aliases": [],
+          "states": []
+      },
+      "Slovakia": {
+          "aliases": [],
+          "states": []
+      },
+      "Slovenia": {
+          "aliases": [],
+          "states": []
+      },
+      "Solomon Islands": {
+          "aliases": [],
+          "states": []
+      },
+      "Somalia": {
+          "aliases": [],
+          "states": []
+      },
+      "South Africa": {
+          "aliases": [],
+          "states": [
+              "gauteng",
+              "western cape",
+              "eastern cape",
+              "northern cape",
+              "kwazulu natal",
+              "limpopo",
+              "mpumalanga"
+          ]
+      },
+      "South Korea": {
+          "aliases": [
+              "korea",
+              "korea south",
+              "republic of korea"
+          ],
+          "states": []
+      },
+      "South Sudan": {
+          "aliases": [],
+          "states": []
+      },
+      "Spain": {
+          "aliases": [
+              "espana"
+          ],
+          "states": [
+              "catalonia",
+              "cataluna",
+              "catalunya",
+              "andalusia",
+              "andalucia",
+              "basque country"
+          ]
+      },
+      "Sri Lanka": {
+          "aliases": [],
+          "states": []
+      },
+      "Sudan": {
+          "aliases": [],
+          "states": []
+      },
+      "Suriname": {
+          "aliases": [],
+          "states": []
+      },
+      "Sweden": {
+          "aliases": [],
+          "states": []
+      },
+      "Switzerland": {
+          "aliases": [],
+          "states": []
+      },
+      "Taiwan": {
+          "aliases": [],
+          "states": []
+      },
+      "Tajikistan": {
+          "aliases": [],
+          "states": []
+      },
+      "Tanzania": {
+          "aliases": [],
+          "states": []
+      },
+      "Thailand": {
+          "aliases": [],
+          "states": []
+      },
+      "Timor-Leste": {
+          "aliases": [
+              "east timor"
+          ],
+          "states": []
+      },
+      "Togo": {
+          "aliases": [],
+          "states": []
+      },
+      "Tonga": {
+          "aliases": [],
+          "states": []
+      },
+      "Trinidad and Tobago": {
+          "aliases": [
+              "trinidad"
+          ],
+          "states": []
+      },
+      "Turkey": {
+          "aliases": [
+              "turkiye"
+          ],
+          "states": []
+      },
+      "Turkmenistan": {
+          "aliases": [],
+          "states": []
+      },
+      "Tuvalu": {
+          "aliases": [],
+          "states": []
+      },
+      "Uganda": {
+          "aliases": [],
+          "states": []
+      },
+      "Ukraine": {
+          "aliases": [],
+          "states": []
+      },
+      "Uruguay": {
+          "aliases": [],
+          "states": []
+      },
+      "Uzbekistan": {
+          "aliases": [],
+          "states": []
+      },
+      "Vanuatu": {
+          "aliases": [],
+          "states": []
+      },
+      "Vatican City": {
+          "aliases": [
+              "vatican"
+          ],
+          "states": []
+      },
+      "Venezuela": {
+          "aliases": [],
+          "states": []
+      },
+      "Vietnam": {
+          "aliases": [
+              "viet nam"
+          ],
+          "states": []
+      },
+      "Zambia": {
+          "aliases": [],
+          "states": []
+      },
+      "Zimbabwe": {
+          "aliases": [],
+          "states": []
       }
   }
 }

@@ -533,9 +533,9 @@ def _render_login_form():
                 <div class="lf-auth-brand-icon">⚡</div>
                 <div class="lf-auth-brand-name">LeadFlow</div>
             </div>
-            <div class="lf-auth-title">Sign in to your account</div>
+            <div class="lf-auth-title">Sign in to LeadFlow</div>
             <div class="lf-auth-subtitle">
-                New here? Use <strong>Create account</strong> below — you'll start as a standard user.
+                Clean, filter and split your lead files. New here? Choose <strong>Create account</strong>.
             </div>
         </div>
         """,
@@ -545,13 +545,14 @@ def _render_login_form():
     left, mid, right = st.columns([1, 3, 1])
     with mid:
         with st.container(key="lf_auth_card"):
-            tab_login, tab_signup = st.tabs(["Log in", "Create account"])
+            tab_login, tab_signup = st.tabs(["Sign in", "Create account"])
 
             with tab_login:
                 with st.form("login_form"):
                     email = st.text_input("Email", key="login_email", placeholder="you@company.com")
-                    password = st.text_input("Password", type="password", key="login_password")
-                    submitted = st.form_submit_button("Log in", type="primary", width="stretch", key="go_login")
+                    password = st.text_input("Password", type="password", key="login_password",
+                                             placeholder="Your password")
+                    submitted = st.form_submit_button("Sign in", type="primary", width="stretch", key="go_login")
                 if submitted:
                     try:
                         client = _new_session_client()
@@ -561,7 +562,8 @@ def _render_login_form():
                         _complete_login(client, res.session, res.user)
                         st.rerun()
                     except Exception as e:
-                        st.error("**We couldn't sign you in.** Check your email and password and try again.", icon="⚠️")
+                        st.error("**We couldn't sign you in.** Check your email and password and try again.",
+                                 icon=":material/error:")
                         st.caption(f"Details: {e}")
 
             with tab_signup:
@@ -571,8 +573,9 @@ def _render_login_form():
                     )
                     new_password = st.text_input(
                         "Password", type="password", key="signup_password",
-                        help="At least 6 characters.",
+                        placeholder="At least 6 characters",
                     )
+                    st.caption("New accounts start as a standard user. An admin can give you more access.")
                     submitted_signup = st.form_submit_button(
                         "Create account", type="primary", width="stretch", key="go_signup"
                     )
@@ -583,16 +586,17 @@ def _render_login_form():
                             {"email": new_email, "password": new_password}
                         )
                         if res.session is None:
-                            st.info(
-                                "✅ Account created. Check your email to confirm it, "
-                                "then log in on the **Log in** tab."
+                            st.success(
+                                "**Account created.** Check your email to confirm it, "
+                                "then sign in on the **Sign in** tab.",
+                                icon=":material/check_circle:",
                             )
                         else:
                             _complete_login(client, res.session, res.user)
                             st.rerun()
                     except Exception as e:
                         st.error("**We couldn't create your account.** Check your email address and use a password "
-                                 "of at least 6 characters, then try again.", icon="⚠️")
+                                 "of at least 6 characters, then try again.", icon=":material/error:")
                         st.caption(f"Details: {e}")
 
     st.stop()
@@ -630,13 +634,18 @@ def require_role(*roles: str):
                 <p>Signed in as <strong>{user['email']}</strong></p>
                 <span class="lf-auth-role-pill">Current role: {user['role']}</span>
                 <p style="margin-top: 1rem;">
-                    Ask an admin to upgrade your role from the <strong>Manage Users</strong> page
-                    if you believe this is a mistake.
+                    Ask an admin to change your role on the <strong>Users &amp; Access</strong> page
+                    if you need this page.
                 </p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        _, link_col, _ = st.columns([2, 1, 2])
+        try:
+            link_col.page_link("app.py", label="Go to Clean Leads", icon="🧹")
+        except Exception:  # page registry unavailable (e.g. headless tests); the sidebar menu still works
+            pass
         st.stop()
 
 
@@ -664,6 +673,6 @@ def render_user_badge():
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("Log out", key="logout_sidebar"):
+            if st.button("Sign out", key="logout_sidebar"):
                 log_out()
                 st.rerun()

@@ -420,17 +420,17 @@ tables in RDS would collide with `pg_restore` in step 5.
 | # | Check | Expected |
 |---|---|---|
 | 1 | `curl https://<domain>/_stcore/health` | `ok`; target group healthy |
-| 2 | Log in with a real account | sidebar shows email and role |
-| 3 | F5, change page, F5 again, reopen the tab | still logged in |
-| 4 | Log out | login form; log in again works |
-| 5 | Database page caption | `Connected to leadflow at <RDS endpoint>:5432` |
+| 2 | Sign in with a real account | sidebar shows email and role |
+| 3 | F5, change page, F5 again, reopen the tab | still signed in |
+| 4 | Sign out | sign-in form; signing in again works |
+| 5 | Database page → Master → *Storage & upload limits* | `Connected to leadflow at <RDS endpoint>:5432.` |
 | 6 | Database tab counts | equal to `target.json` (Master 1,479,585 / MQL 17,744 / Bounce 0 / Unsub 0 as of 24 Sep) |
 | 7 | Storage panel | real sizes; Available ≈ 20 GB − used |
 | 8 | Upload a 3-row test file to MQL, Bounce and Unsub | counts rise by exactly 3; history row with date/time |
 | 9 | Merge a small Master file with 1 new + 2 existing emails | total +1, 2 skipped |
-| 10 | Main page: compare options visible under the uploader; run the pipeline; download | report shows Steps 6, 7, 7b, 7c; CSV downloads |
+| 10 | Main page: upload a file; list options visible in step 2; click *Clean my leads*; download | report shows Steps 6, 7, 7b, 7c; CSV downloads |
 | 11 | Split by field: search "Software"; tick "Select all shown"; untick it | only matching groups shown; ticking selects them; unticking clears them |
-| 12 | Log in as a `user`-role account | Database and Manage Users show "You need Admin access" |
+| 12 | Sign in as a `user`-role account | Lead Database and Users & Access show "You need Admin access" |
 | 13 | UI in a dark-mode browser | all text readable |
 
 Checks 8–9 write to RDS only. Use clearly named test lists (e.g. `__test_mql__`) and delete them
