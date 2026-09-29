@@ -39,6 +39,7 @@ from __future__ import annotations
 import functools
 import io
 import os
+import re
 import threading
 import time
 from contextlib import ExitStack, contextmanager
@@ -855,6 +856,35 @@ def get_master_contacts_df(list_ids: list[int], limit: int | None = None) -> pd.
         ORDER BY email
     """
     params: list = [list(list_ids)]
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(int(limit))
+    return _fetch_df(query + ";", tuple(params))
+
+
+MASTER_SEARCH_COLUMNS = ("first_name", "last_name", "company", "email", "job_title", "industry", "location")
+
+
+def search_master_contacts(column: str, terms: list[str], limit: int | None = None) -> pd.DataFrame:
+    """Master contacts (one row per email, across every list) whose `column` contains any of
+    `terms` — case-insensitive substring match, the same rule as the Split by field search.
+
+    Pass `limit` to cap the number of rows fetched.
+    """
+    if column not in MASTER_SEARCH_COLUMNS:
+        raise ValueError(f"Unknown master column: {column!r}")
+    terms = [t for t in (str(t).strip() for t in terms) if t]
+    if not terms:
+        return pd.DataFrame(columns=list(MASTER_SEARCH_COLUMNS))
+    # Escape LIKE wildcards so "%" / "_" in a search term are matched literally.
+    patterns = ["%" + re.sub(r"([\\%_])", r"\\\1", t) + "%" for t in terms]
+    query = f"""
+        SELECT DISTINCT ON (email) email, first_name, last_name, company, job_title, industry, location
+        FROM master_contacts
+        WHERE {column} ILIKE ANY(%s)
+        ORDER BY email, id
+    """
+    params: list = [patterns]
     if limit is not None:
         query += " LIMIT %s"
         params.append(int(limit))

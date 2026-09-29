@@ -44,6 +44,7 @@ except (ImportError, ModuleNotFoundError):
 import db
 import theme
 import Auth as auth
+from dataio import group_download_name, safe_filename, split_search_terms
 
 st.set_page_config(
     page_title="LeadFlow — Lead Data Cleaning",
@@ -194,6 +195,8 @@ SPECIAL_CHARS_PATTERN = re.compile(
 SPECIAL_CHARS_COUNT_PATTERN = re.compile(r"[^\x00-\x7F]|[~*!#$%^?]")
 
 COUNTRIES_JSON_PATH = Path(__file__).parent / "data" / "countries.json"
+LOCATION_EMPTY_LABEL = "Location Empty"
+UNKNOWN_LOCATION_LABEL = "Unknown Location"
 MAX_UNCOMPRESSED_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_COMPRESSED_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_CONTENT_BYTES = 250 * 1024 * 1024
@@ -409,6 +412,24 @@ def load_country_reference(json_path_str):
     }
     max_city_tokens = max((len(k.split()) for k in city_rank), default=0)
 
+    # Extra country names/aliases and state/province names from the optional
+    # "country_keywords" block. A state only identifies its parent country.
+    keyword_to_country = {}
+    state_to_country = {}
+    for country, entry in (payload.get("country_keywords") or {}).items():
+        for kw in [country, *entry.get("aliases", [])]:
+            keyword_to_country.setdefault(normalize_place_text(kw), country)
+        for state in entry.get("states", []):
+            state_to_country.setdefault(normalize_place_text(state), country)
+
+    def _keyword_pattern(keys):
+        # Whole-token match anywhere in the normalized text; longest keyword first
+        # so "south sudan" wins over "sudan" and "guinea bissau" over "guinea".
+        keys = sorted((k for k in keys if k), key=len, reverse=True)
+        if not keys:
+            return None
+        return re.compile(r"(?<![a-z0-9])(?:" + "|".join(re.escape(k) for k in keys) + r")(?![a-z0-9])")
+
     return {
         "country_name_lookup": country_name_lookup,
         "alias_lookup": alias_lookup,
@@ -416,6 +437,10 @@ def load_country_reference(json_path_str):
         "city_alias_lookup": city_alias_lookup,
         "city_rank": city_rank,
         "max_city_tokens": max_city_tokens,
+        "keyword_to_country": keyword_to_country,
+        "keyword_pattern": _keyword_pattern(keyword_to_country),
+        "state_to_country": state_to_country,
+        "state_pattern": _keyword_pattern(state_to_country),
     }
 
 
@@ -425,14 +450,19 @@ def classify_country_from_location(location_text, country_ref):
     Rules (in priority order):
     1. If a country name (or known alias) appears ANYWHERE in the location text,
        return that country immediately — city/state tokens are ignored.
-    2. If no country name is found, scan the location parts LEFT-TO-RIGHT and
+    2. Otherwise, a country keyword/alias from "country_keywords" anywhere in the
+       text, then a state/province keyword (mapped to its parent country).
+    3. If no country name is found, scan the location parts LEFT-TO-RIGHT and
        return the country of the FIRST city that matches.
-    3. If nothing matches, return "Unknown".
+    4. If nothing matches, return "Unknown Location". A blank/whitespace-only
+       location returns "Location Empty".
     """
+    if location_text is None or not str(location_text).strip():
+        return LOCATION_EMPTY_LABEL
     text_raw = str(location_text)
     normalized = normalize_place_text(text_raw)
     if not normalized:
-        return "Unknown"
+        return UNKNOWN_LOCATION_LABEL
 
     country_name_lookup = country_ref["country_name_lookup"]
     alias_lookup = country_ref["alias_lookup"]
@@ -472,6 +502,13 @@ def classify_country_from_location(location_text, country_ref):
         if f" {alias_norm} " in full_text:
             return country
 
+    # 3) Country keyword/alias, then state/province keyword → parent country.
+    for pattern_key, lookup_key in (("keyword_pattern", "keyword_to_country"), ("state_pattern", "state_to_country")):
+        pattern = country_ref.get(pattern_key)
+        match = pattern.search(normalized) if pattern else None
+        if match:
+            return country_ref[lookup_key][match.group(0)]
+
     # ── PRIORITY 2: City-based fallback — left-to-right, first match wins ────
     # Scan parts in the order they appear in the location string. The first
     # part that resolves to a known city is used immediately — no scoring.
@@ -507,7 +544,7 @@ def classify_country_from_location(location_text, country_ref):
             return sorted(matched_countries)[0]
 
     # ── No match — location present but not in countries.json ────────────────
-    return "Unknown"
+    return UNKNOWN_LOCATION_LABEL
 
 
 def classify_countries_fast(location_series, country_ref):
@@ -515,8 +552,8 @@ def classify_countries_fast(location_series, country_ref):
     Vectorized via unique location mapping for ultra-fast performance on large datasets."""
     unique_locs = location_series.dropna().unique()
     loc_to_country = {loc: classify_country_from_location(loc, country_ref) for loc in unique_locs}
-    loc_to_country[""] = "Unknown"
-    return location_series.map(loc_to_country).fillna("Unknown")
+    loc_to_country[""] = LOCATION_EMPTY_LABEL
+    return location_series.map(loc_to_country).fillna(LOCATION_EMPTY_LABEL)
 
 
 def classify_countries(location_series, country_ref):
@@ -1097,10 +1134,28 @@ if active_raw_file is not None:
                     std[field] = ""
             report.append(f"Step 1 - Standardized columns. Fields kept: {[c for c in FINAL_COLUMNS if c in mapping or c in std.columns]}")
 
+            # Every other source column rides along unchanged (original name and data) so the
+            # final campaign keeps all input columns. The cleaning steps below only look at the
+            # standard columns, so these never affect which rows are kept.
+            _mapped_source_cols = {mapping[f] for f in FINAL_COLUMNS if f in mapping}
+            extra_columns = []
+            for col in df.columns:
+                if col in _mapped_source_cols:
+                    continue
+                out_name = str(col)
+                while out_name in std.columns or out_name == "__email_lower":
+                    out_name = f"{out_name} (original)"
+                std[out_name] = df[col].to_numpy()
+                extra_columns.append(out_name)
+            if extra_columns:
+                report.append(f"Step 1 - Kept {len(extra_columns):,} other column(s) from your file: {extra_columns}")
+
             # ---- STEP 2: Remove blank email records ----
             _clean_status.update(label="Removing leads with no email address…")
             before = len(std)
-            std["Email"] = std["Email"].astype(str).str.strip()
+            # fillna first: pandas 3 keeps empty cells as missing through astype(str), which
+            # would otherwise slip past the blank checks below.
+            std["Email"] = std["Email"].fillna("").astype(str).str.strip()
             std = std[(std["Email"] != "") & (std["Email"].str.lower() != "nan") & (std["Email"].str.lower() != "none")].reset_index(drop=True)
             report.append(f"Step 2 - Removed blank emails: {before - len(std):,} rows removed")
 
@@ -1277,7 +1332,7 @@ if active_raw_file is not None:
             std = std.drop(columns="__email_lower")
 
             # ---- STEP 8: Arrange final column sequence ----
-            std = std[[c for c in FINAL_COLUMNS if c in std.columns]]
+            std = std[[c for c in FINAL_COLUMNS if c in std.columns] + extra_columns]
 
             # Drop Industry/Location columns entirely if never available and fully empty
             for optional_col in ["Industry", "Location"]:
@@ -1291,7 +1346,7 @@ if active_raw_file is not None:
             report.append(f"Step 9 - Final QC pass: removed {before - len(std):,} blank/empty rows")
 
             dup_check = int(std["Email"].str.lower().duplicated().sum())
-            blank_email_check = int((std["Email"].astype(str).str.strip() == "").sum())
+            blank_email_check = int((std["Email"].fillna("").astype(str).str.strip() == "").sum())
             report.append(f"Final QC - Duplicate emails remaining: {dup_check:,}")
             report.append(f"Final QC - Blank emails remaining: {blank_email_check:,}")
             report.append(f"Final row count: {len(std):,} (started at {start_count:,})")
@@ -1304,10 +1359,10 @@ if active_raw_file is not None:
                         country_ref = load_country_reference(str(COUNTRIES_JSON_PATH))
                     country_series = classify_countries_fast(std["Location"], country_ref)
                 except Exception as e:
-                    st.warning(f"Country split fallback: could not parse countries.json ({e}). All rows marked as Unknown.")
-                    country_series = pd.Series(["Unknown"] * len(std), index=std.index)
+                    st.warning(f"Country split fallback: could not parse countries.json ({e}). All rows marked as {UNKNOWN_LOCATION_LABEL}.")
+                    country_series = pd.Series([UNKNOWN_LOCATION_LABEL] * len(std), index=std.index)
             else:
-                country_series = pd.Series(["Unknown"] * len(std), index=std.index)
+                country_series = pd.Series([LOCATION_EMPTY_LABEL] * len(std), index=std.index)
 
             st.session_state["cleaned_df"] = std
             st.session_state["run_token"] = uuid.uuid4().hex
@@ -1585,7 +1640,8 @@ if active_raw_file is not None:
                 with tab_country:
                     st.caption(
                         "Download one country's leads as a separate file. Countries are detected from the Location "
-                        "column: **Unknown** means the location was blank, **Other** means no country was recognised."
+                        f"column: **{LOCATION_EMPTY_LABEL}** means the location was blank, **{UNKNOWN_LOCATION_LABEL}** "
+                        "means no country was recognised."
                     )
                     country_series = st.session_state.get("country_series", pd.Series())
                     country_counts = st.session_state.get("country_counts", {})
@@ -1593,7 +1649,7 @@ if active_raw_file is not None:
 
                     if final_df.empty:
                         theme.empty_state("🎉", "No leads left to split", "Every lead has already been downloaded or removed.")
-                    elif country_series.empty or set(country_counts.keys()) == {"Unknown"}:
+                    elif country_series.empty or set(country_counts.keys()) <= {LOCATION_EMPTY_LABEL, UNKNOWN_LOCATION_LABEL}:
                         theme.empty_state(
                             "🌍", "No country information found",
                             "Pick a Location column in step 3 and clean your leads again to split them by country.",
@@ -1625,7 +1681,7 @@ if active_raw_file is not None:
                                 st.download_button(
                                     f"⬇️ Download {selected_country} ({cnt:,} leads)",
                                     data=csv_bytes(country_df),
-                                    file_name=f"final_campaign_file_{safe_name}.csv",
+                                    file_name=f"{safe_filename(selected_country, 'Country_file')}.csv",
                                     mime="text/csv",
                                     type="primary",
                                     key=f"dl_single_country_{safe_name}",
@@ -1711,11 +1767,14 @@ if active_raw_file is not None:
                         group_search = search_col.text_input(
                             f"🔎 Search {split_col_choice}",
                             key=f"split_group_search_{safe_col}",
-                            placeholder="Type to find a value, e.g. Software, Healthcare, Finance, SaaS…",
+                            placeholder="Type to find a value — separate several with commas, e.g. Real Estate, Construction, Software",
                             on_change=_on_group_search_change,
                         ).strip().lower()
+                        # Comma-separated values: a group is shown if it matches any of them.
+                        search_terms = split_search_terms(group_search)
                         visible_groups = (
-                            [g for g in ordered_groups if group_search in g.lower()] if group_search else ordered_groups
+                            [g for g in ordered_groups if any(t in g.lower() for t in search_terms)]
+                            if search_terms else ordered_groups
                         )
 
                         def _on_select_all_toggle(sel_key=sel_key, all_key=all_key, shown=tuple(visible_groups)):
@@ -1822,12 +1881,33 @@ if active_raw_file is not None:
                                 st.download_button(
                                     f"⬇️ Download selected ({combined_rows:,} leads)",
                                     data=_build_combined,
-                                    file_name=f"split_{safe_col}_selected_groups.csv",
+                                    file_name=group_download_name(split_col_choice, selected_groups),
                                     mime="text/csv",
                                     type="primary",
                                     key=f"dl_combined_split_{safe_col}",
                                     on_click=remove_downloaded_leads,
                                     args=(combined_df, (all_key,), _grp_label),
+                                )
+
+                            if len(selected_groups) > 1:
+                                # Same download, one group at a time, named after the group.
+                                one_col_sel, one_col_dl = st.columns([2, 1], vertical_alignment="bottom")
+                                one_group = one_col_sel.selectbox(
+                                    "Or download one selected group on its own",
+                                    selected_groups,
+                                    key=f"split_one_group_{safe_col}",
+                                    format_func=lambda g: f"{g} ({group_counts[g]:,} leads)",
+                                )
+                                one_df = final_df[group_series == one_group]
+                                one_col_dl.download_button(
+                                    f"⬇️ Download {one_group} ({len(one_df):,} leads)",
+                                    data=csv_bytes(one_df),
+                                    file_name=group_download_name(split_col_choice, [one_group]),
+                                    mime="text/csv",
+                                    key=f"dl_one_split_{safe_col}",
+                                    on_click=remove_downloaded_leads,
+                                    args=(one_df, (), one_group),
+                                    width="stretch",
                                 )
 
             with tab_audit:

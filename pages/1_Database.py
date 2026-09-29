@@ -30,7 +30,9 @@ from dataio import (
     extract_emails_from_file,
     forget_file,
     get_upload_size,
+    group_download_name,
     load_file,
+    split_search_terms,
     validate_upload,
 )
 st.set_page_config(
@@ -394,6 +396,59 @@ def render_merge_history(category, lists_df, noun):
                 confirm_revert(int(m.id), m.file_name, names[list_id], added, noun, fmt_datetime(m.uploaded_at))
 
 
+MASTER_SEARCH_LIMIT = 500_000
+
+
+def render_master_search(result):
+    """Master search results grouped by the searched field's value, with downloads for all
+    results or one group at a time (named after the group, e.g. Real_Estate.csv)."""
+    if not result:
+        return
+    field, terms = result["field"], result["terms"]
+    found = result["df"].rename(columns={v: k for k, v in MASTER_FIELD_MAP.items()})
+    found = found[[c for c in MASTER_FIELD_MAP if c in found.columns]]
+    if len(found) > MASTER_SEARCH_LIMIT:
+        found = found.head(MASTER_SEARCH_LIMIT)
+        st.warning(f"More than {MASTER_SEARCH_LIMIT:,} leads match — showing and downloading the first "
+                   f"{MASTER_SEARCH_LIMIT:,}. Narrow your search to get the rest.")
+    if found.empty:
+        theme.empty_state("🔎", "No matching leads",
+                          f"No Master lead's {field} matches “{html.escape(', '.join(terms))}”.")
+        return
+
+    values = found[field].fillna("").astype(str).str.strip()
+    group_series = values.replace("", "Unknown")
+    group_counts = group_series.value_counts().to_dict()
+    ordered_groups = [k for k, _ in sorted(group_counts.items(), key=lambda x: -x[1])]
+    lowered = values.str.lower()
+    per_term = " · ".join(f"**{html.escape(t)}**: {int(lowered.str.contains(t.lower(), regex=False).sum()):,}"
+                          for t in terms)
+    st.caption(f"**{len(found):,} leads** in **{len(ordered_groups):,}** {field} groups. Leads per search value — {per_term}")
+    st.dataframe(
+        pd.DataFrame({field: ordered_groups, "Leads": [group_counts[g] for g in ordered_groups]}),
+        width="stretch", hide_index=True,
+    )
+
+    safe_field = field.lower().replace(" ", "_")
+    all_col, one_sel, one_dl = st.columns([1.2, 1.6, 1.2], vertical_alignment="bottom")
+    all_col.download_button(
+        f"⬇️ Download all ({len(found):,} leads)",
+        data=lambda df=found: df.to_csv(index=False).encode("utf-8"),
+        file_name=group_download_name(field, ordered_groups),
+        mime="text/csv", type="primary", key=f"dl_master_search_all_{safe_field}", width="stretch",
+    )
+    if len(ordered_groups) > 1:
+        one_group = one_sel.selectbox("Or download one group", ordered_groups, key=f"master_search_one_{safe_field}",
+                                      format_func=lambda g: f"{g} ({group_counts[g]:,} leads)")
+        one_df = found[group_series == one_group]
+        one_dl.download_button(
+            f"⬇️ Download {one_group}",
+            data=lambda df=one_df: df.to_csv(index=False).encode("utf-8"),
+            file_name=group_download_name(field, [one_group]),
+            mime="text/csv", key=f"dl_master_search_one_{safe_field}", width="stretch",
+        )
+
+
 # ============================================================================ #
 # Live counts (queried from the database, never from session/upload state)
 # ============================================================================ #
@@ -633,6 +688,34 @@ with tab_master:
     with theme.card("master_history"):
         theme.section_header("05-History", "Upload history", "Every file added to your Master database.")
         show_history("master")
+
+    with theme.card("master_search"):
+        theme.section_header(
+            "06-Search", "Search & download",
+            "Find Master leads by a field and download them. Separate several values with commas, "
+            "e.g. Real Estate, Construction, Software. Downloading doesn't change your database.",
+        )
+        with st.form("master_search_form", border=False):
+            s_field, s_text, s_go = st.columns([1, 3, 1], vertical_alignment="bottom")
+            search_field = s_field.selectbox("Search in", list(MASTER_FIELD_MAP),
+                                             index=list(MASTER_FIELD_MAP).index("Industry"), key="master_search_field")
+            search_text = s_text.text_input("🔎 Search", key="master_search_text",
+                                            placeholder="e.g. Real Estate, Construction, Software")
+            searched = s_go.form_submit_button("Search", type="primary", width="stretch")
+        if searched:
+            terms = split_search_terms(search_text)
+            if not terms:
+                st.session_state.pop("master_search", None)
+                st.error("Type at least one value to search for.")
+            else:
+                try:
+                    with st.spinner("Searching your Master database…"):
+                        found = db.search_master_contacts(MASTER_FIELD_MAP[search_field], terms,
+                                                          limit=MASTER_SEARCH_LIMIT + 1)
+                    st.session_state["master_search"] = {"field": search_field, "terms": terms, "df": found}
+                except Exception as e:
+                    theme.friendly_error("Couldn't search your Master database", "Please try again.", e)
+        render_master_search(st.session_state.get("master_search"))
 
 
 # ---------------------------------------------------------------------------- #

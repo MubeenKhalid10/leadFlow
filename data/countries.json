@@ -213,6 +213,7 @@
         "Murfreesboro",
         "Murrieta",
         "Melbourne, Florida",
+        "Massachusetts",
         "Nampa",
         "Naperville",
         "Nashville",
@@ -231,6 +232,7 @@
         "Oakland",
         "Oceanside",
         "Odessa",
+        "Ohio",
         "Oklahoma City",
         "Olathe",
         "Omaha",
@@ -319,6 +321,7 @@
         "Tampa",
         "Temecula",
         "Tempe",
+        "Texas",
         "Thornton",
         "Thousand Oaks",
         "Toledo",
@@ -2169,5 +2172,396 @@
         "Tolga"
     ]
 }
-]
+],
+  "country_keywords": {
+      "United Kingdom": {
+          "aliases": [
+              "great britain",
+              "britain"
+          ],
+          "states": []
+      },
+      "United Arab Emirates": {
+          "aliases": [
+              "emirates"
+          ],
+          "states": [
+              "abu dhabi",
+              "dubai",
+              "sharjah",
+              "ajman",
+              "umm al quwain",
+              "ras al khaimah",
+              "fujairah"
+          ]
+      },
+      "Saudi Arabia": {
+          "aliases": [
+              "ksa",
+              "kingdom of saudi arabia"
+          ],
+          "states": []
+      },
+      "Afghanistan": {
+          "aliases": [],
+          "states": []
+      },
+      "Albania": {
+          "aliases": [],
+          "states": []
+      },
+      "Andorra": {
+          "aliases": [],
+          "states": []
+      },
+      "Angola": {
+          "aliases": [],
+          "states": []
+      },
+      "Antigua and Barbuda": {
+          "aliases": [
+              "antigua"
+          ],
+          "states": []
+      },
+      "Argentina": {
+          "aliases": [],
+          "states": []
+      },
+      "Armenia": {
+          "aliases": [],
+          "states": []
+      },
+      "Australia": {
+          "aliases": [],
+          "states": [
+              "new south wales",
+              "victoria",
+              "queensland",
+              "western australia",
+              "south australia",
+              "tasmania",
+              "northern territory",
+              "australian capital territory"
+          ]
+      },
+      "Austria": {
+          "aliases": [],
+          "states": []
+      },
+      "Azerbaijan": {
+          "aliases": [],
+          "states": []
+      },
+      "Bahamas": {
+          "aliases": [],
+          "states": []
+      },
+      "Bangladesh": {
+          "aliases": [],
+          "states": []
+      },
+      "Barbados": {
+          "aliases": [],
+          "states": []
+      },
+      "Belarus": {
+          "aliases": [],
+          "states": []
+      },
+      "Belgium": {
+          "aliases": [],
+          "states": []
+      },
+      "Belize": {
+          "aliases": [],
+          "states": []
+      },
+      "Benin": {
+          "aliases": [],
+          "states": []
+      },
+      "Bhutan": {
+          "aliases": [],
+          "states": []
+      },
+      "Bolivia": {
+          "aliases": [],
+          "states": []
+      },
+      "Bosnia and Herzegovina": {
+          "aliases": [
+              "bosnia"
+          ],
+          "states": []
+      },
+      "Botswana": {
+          "aliases": [],
+          "states": []
+      },
+      "Brazil": {
+          "aliases": [
+              "brasil"
+          ],
+          "states": [
+              "sao paulo",
+              "rio de janeiro",
+              "minas gerais",
+              "bahia",
+              "rio grande do sul",
+              "parana",
+              "santa catarina",
+              "pernambuco",
+              "ceara",
+              "goias",
+              "espirito santo"
+          ]
+      },
+      "Brunei": {
+          "aliases": [],
+          "states": []
+      },
+      "Bulgaria": {
+          "aliases": [],
+          "states": []
+      },
+      "Burkina Faso": {
+          "aliases": [],
+          "states": []
+      },
+      "Burundi": {
+          "aliases": [],
+          "states": []
+      },
+      "Cambodia": {
+          "aliases": [],
+          "states": []
+      },
+      "Cameroon": {
+          "aliases": [],
+          "states": []
+      },
+      "Canada": {
+          "aliases": [],
+          "states": [
+              "ontario",
+              "quebec",
+              "british columbia",
+              "alberta",
+              "manitoba",
+              "saskatchewan",
+              "nova scotia",
+              "new brunswick",
+              "newfoundland",
+              "newfoundland and labrador",
+              "prince edward island",
+              "yukon",
+              "nunavut",
+              "northwest territories"
+          ]
+      },
+      "Cape Verde": {
+          "aliases": [
+              "cabo verde"
+          ],
+          "states": []
+      },
+      "Central African Republic": {
+          "aliases": [],
+          "states": []
+      },
+      "Chad": {
+          "aliases": [],
+          "states": []
+      },
+      "Chile": {
+          "aliases": [],
+          "states": []
+      },
+      "China": {
+          "aliases": [
+              "prc",
+              "peoples republic of china"
+          ],
+          "states": [
+              "guangdong",
+              "zhejiang",
+              "jiangsu",
+              "sichuan",
+              "shandong",
+              "fujian",
+              "hubei",
+              "hunan",
+              "henan",
+              "hebei",
+              "yunnan",
+              "guangxi",
+              "shaanxi",
+              "shanxi",
+              "anhui",
+              "jiangxi",
+              "liaoning",
+              "jilin",
+              "heilongjiang",
+              "xinjiang",
+              "tibet",
+              "guizhou",
+              "gansu",
+              "hainan"
+          ]
+      },
+      "Colombia": {
+          "aliases": [],
+          "states": []
+      },
+      "Comoros": {
+          "aliases": [],
+          "states": []
+      },
+      "Congo": {
+          "aliases": [
+              "republic of the congo"
+          ],
+          "states": []
+      },
+      "Democratic Republic of the Congo": {
+          "aliases": [
+              "dr congo",
+              "drc",
+              "congo kinshasa"
+          ],
+          "states": []
+      },
+      "Costa Rica": {
+          "aliases": [],
+          "states": []
+      },
+      "Croatia": {
+          "aliases": [],
+          "states": []
+      },
+      "Cuba": {
+          "aliases": [],
+          "states": []
+      },
+      "Cyprus": {
+          "aliases": [],
+          "states": []
+      },
+      "Czech Republic": {
+          "aliases": [
+              "czechia"
+          ],
+          "states": []
+      },
+      "Denmark": {
+          "aliases": [],
+          "states": []
+      },
+      "Djibouti": {
+          "aliases": [],
+          "states": []
+      },
+      "Dominica": {
+          "aliases": [],
+          "states": []
+      },
+      "Dominican Republic": {
+          "aliases": [],
+          "states": []
+      },
+      "Ecuador": {
+          "aliases": [],
+          "states": []
+      },
+      "El Salvador": {
+          "aliases": [],
+          "states": []
+      },
+      "Equatorial Guinea": {
+          "aliases": [],
+          "states": []
+      },
+      "Eritrea": {
+          "aliases": [],
+          "states": []
+      },
+      "Eswatini": {
+          "aliases": [
+              "swaziland"
+          ],
+          "states": []
+      },
+      "Estonia": {
+          "aliases": [],
+          "states": []
+      },
+      "Ethiopia": {
+          "aliases": [],
+          "states": []
+      },
+      "Fiji": {
+          "aliases": [],
+          "states": []
+      },
+      "Finland": {
+          "aliases": [],
+          "states": []
+      },
+      "France": {
+          "aliases": [],
+          "states": [
+              "ile de france",
+              "provence",
+              "normandy",
+              "brittany",
+              "occitanie",
+              "auvergne rhone alpes",
+              "hauts de france",
+              "grand est",
+              "nouvelle aquitaine"
+          ]
+      },
+      "Gabon": {
+          "aliases": [],
+          "states": []
+      },
+      "Gambia": {
+          "aliases": [],
+          "states": []
+      },
+      "Georgia": {
+          "aliases": [],
+          "states": []
+      },
+      "Germany": {
+          "aliases": [
+              "deutschland"
+          ],
+          "states": [
+              "bavaria",
+              "bayern",
+              "baden wurttemberg",
+              "baden wuerttemberg",
+              "north rhine westphalia",
+              "nordrhein westfalen",
+              "hesse",
+              "hessen",
+              "lower saxony",
+              "niedersachsen",
+              "saxony",
+              "sachsen",
+              "saxony anhalt",
+              "sachsen anhalt",
+              "thuringia",
+              "thuringen",
+              "brandenburg",
+              "mecklenburg vorpommern",
+              "schleswig holstein",
+              "rhineland palatinate",
+              "rheinland pfalz",
+              "saarland"
+          ]
+      }
+  }
 }

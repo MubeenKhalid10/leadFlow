@@ -1657,13 +1657,8 @@ def inject_theme():
             margin-top: 0.8rem;
         }
 
-        /* Section and page headings: darker, heavier, clearly above body text. */
-        .lf-section-head h2 {
-            color: #1e1b4b;
-            font-size: 1.6rem;
-        }
-
-        [data-testid="stMain"] [data-testid="stMarkdownContainer"] > h2 {
+        /* Page titles ("## ..." on Database / Manage Users): largest heading on the page. */
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stHeadingWithActionElements"] > h2 {
             color: #1e1b4b;
             font-size: 2rem;
             font-weight: 800;
@@ -1671,8 +1666,17 @@ def inject_theme():
             margin: 0.4rem 0 0.2rem;
         }
 
+        /* Section titles: one step below page titles, darker and heavier than body text.
+           Listed after the page-title rule (same specificity) so it wins inside section heads. */
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 {
+            color: #1e1b4b;
+            font-size: 1.6rem;
+            font-weight: 800;
+            margin: 0;
+        }
+
         /* Sub-headings inside a section: smaller, with an accent bar. */
-        div[class*="st-key-lf_card_"] [data-testid="stMarkdownContainer"] > h3 {
+        [data-testid="stAppViewContainer"] div[class*="st-key-lf_card_"] [data-testid="stHeadingWithActionElements"] > h3 {
             font-size: 1.12rem;
             font-weight: 800;
             color: var(--lf-title);
@@ -1684,7 +1688,12 @@ def inject_theme():
         @media (max-width: 640px) {
             div[class*="st-key-lf_card_"] { padding: 0.2rem 0.9rem 1rem; }
             div[class*="st-key-lf_subcard_"] { padding: 0.2rem 0.75rem 0.9rem; }
-            [data-testid="stMain"] [data-testid="stMarkdownContainer"] > h2 { font-size: 1.6rem; }
+            [data-testid="stAppViewContainer"] [data-testid="stMain"] [data-testid="stHeadingWithActionElements"] > h2 { font-size: 1.6rem; }
+            [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.3rem; }
+        }
+
+        @media (min-width: 641px) and (max-width: 900px) {
+            [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.4rem; }
         }
 
         @media (max-width: 900px) {

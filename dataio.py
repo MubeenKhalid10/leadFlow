@@ -53,6 +53,38 @@ def auto_map_columns(df):
     return mapping
 
 
+_WINDOWS_RESERVED_NAMES = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
+                           *(f"lpt{i}" for i in range(1, 10))}
+
+
+def safe_filename(name, fallback="download"):
+    """A readable, filesystem-safe file stem from a field/group name: "Real Estate" -> "Real_Estate".
+
+    Characters invalid on Windows/macOS/Linux and control characters become "_", spaces
+    become "_", repeated "_" collapse, and the result is capped at 100 characters.
+    """
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name).strip())
+    stem = re.sub(r"\s+", "_", stem)
+    stem = re.sub(r"_+", "_", stem).strip("._ ")[:100].rstrip("._ ")
+    if not stem or stem.lower() in _WINDOWS_RESERVED_NAMES:
+        return fallback
+    return stem
+
+
+def group_download_name(field, groups):
+    """CSV name for a split download: the group's own name for one group ("Real_Estate.csv"),
+    otherwise the field's ("Job_title_file.csv")."""
+    field_stem = f"{safe_filename(str(field).capitalize(), 'Split')}_file"
+    if len(groups) == 1:
+        return f"{safe_filename(groups[0], field_stem)}.csv"
+    return f"{field_stem}.csv"
+
+
+def split_search_terms(text):
+    """Comma-separated search text -> trimmed, non-empty terms ("a, b ,," -> ["a", "b"])."""
+    return [t.strip() for t in str(text).split(",") if t.strip()]
+
+
 def get_upload_size(file):
     size = getattr(file, "size", None)
     if size is not None:
