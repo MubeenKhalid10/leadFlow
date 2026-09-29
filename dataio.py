@@ -85,6 +85,31 @@ def split_search_terms(text):
     return [t.strip() for t in str(text).split(",") if t.strip()]
 
 
+def keyword_terms(chips):
+    """Keyword chips -> unique search terms, splitting any chip that holds a pasted
+    comma-separated list (["CTO, Chief", "cto"] -> ["CTO", "Chief"])."""
+    terms, seen = [], set()
+    for chip in chips or ():
+        for t in split_search_terms(chip):
+            if t.lower() not in seen:
+                seen.add(t.lower())
+                terms.append(t)
+    return terms
+
+
+def keyword_regex(term):
+    """Regex matching `term` as a whole word or phrase, not inside a longer word: "CTO" matches
+    "CTO" and "Co-founder & CTO" but not "Inspectors". Spaces match any run of whitespace.
+    The same pattern works in Python `re` (with re.IGNORECASE) and Postgres `~*`."""
+    words = [re.sub(r"([.^$*+?()\[\]{}|\\])", r"\\\1", w) for w in str(term).split()]
+    return r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)"
+
+
+def keyword_matcher(terms):
+    """Compiled case-insensitive regex matching any of `terms` as a whole word/phrase."""
+    return re.compile("|".join(keyword_regex(t) for t in terms), re.IGNORECASE)
+
+
 def get_upload_size(file):
     size = getattr(file, "size", None)
     if size is not None:

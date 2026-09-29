@@ -39,7 +39,6 @@ from __future__ import annotations
 import functools
 import io
 import os
-import re
 import threading
 import time
 from contextlib import ExitStack, contextmanager
@@ -867,21 +866,23 @@ MASTER_SEARCH_COLUMNS = ("first_name", "last_name", "company", "email", "job_tit
 
 def search_master_contacts(column: str, terms: list[str], limit: int | None = None) -> pd.DataFrame:
     """Master contacts (one row per email, across every list) whose `column` contains any of
-    `terms` — case-insensitive substring match, the same rule as the Split by field search.
+    `terms` as a whole word or phrase, case-insensitively ("CTO" matches "Co-founder & CTO" but
+    not "Inspectors") — the same rule as the Split by field search.
 
     Pass `limit` to cap the number of rows fetched.
     """
+    from dataio import keyword_regex
+
     if column not in MASTER_SEARCH_COLUMNS:
         raise ValueError(f"Unknown master column: {column!r}")
     terms = [t for t in (str(t).strip() for t in terms) if t]
     if not terms:
         return pd.DataFrame(columns=list(MASTER_SEARCH_COLUMNS))
-    # Escape LIKE wildcards so "%" / "_" in a search term are matched literally.
-    patterns = ["%" + re.sub(r"([\\%_])", r"\\\1", t) + "%" for t in terms]
+    patterns = [keyword_regex(t) for t in terms]
     query = f"""
         SELECT DISTINCT ON (email) email, first_name, last_name, company, job_title, industry, location
         FROM master_contacts
-        WHERE {column} ILIKE ANY(%s)
+        WHERE {column} ~* ANY(%s)
         ORDER BY email, id
     """
     params: list = [patterns]

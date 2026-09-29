@@ -44,7 +44,7 @@ except (ImportError, ModuleNotFoundError):
 import db
 import theme
 import Auth as auth
-from dataio import group_download_name, safe_filename, split_search_terms
+from dataio import group_download_name, keyword_matcher, keyword_terms, safe_filename
 
 st.set_page_config(
     page_title="Clean Leads — LeadFlow",
@@ -1784,7 +1784,8 @@ if df is not None:
                             "Leads with this field left blank are grouped under **Unknown**."
                         )
 
-                        # Search box: type part of a value (e.g. "Software") to narrow the table.
+                        # Keyword chips (e.g. "CTO", "Chief") narrow the table to groups containing
+                        # a keyword as a whole word — "CTO" never matches "Inspectors".
                         # Selections are remembered across searches so you can pick from several.
                         # The remembered set (sel_key) is the single source of truth for what is
                         # selected; the table and "Select all shown" only change it.
@@ -1799,18 +1800,21 @@ if df is not None:
                             st.session_state[all_key] = False
 
                         search_col, all_col, clear_col = st.columns([3, 1, 1], vertical_alignment="bottom")
-                        group_search = search_col.text_input(
-                            f"Search {split_col_choice} groups",
-                            key=f"split_group_search_{safe_col}",
-                            placeholder="e.g. Real Estate, Construction, Software",
+                        search_terms = keyword_terms(search_col.multiselect(
+                            f"Search {split_col_choice} groups by keyword",
+                            options=[],
+                            accept_new_options=True,
+                            key=f"split_group_keywords_{safe_col}",
+                            placeholder="Type a keyword and press Enter, e.g. CTO",
                             on_change=_on_group_search_change,
-                        ).strip().lower()
-                        # Comma-separated values: a group is shown if it matches any of them.
-                        search_terms = split_search_terms(group_search)
-                        visible_groups = (
-                            [g for g in ordered_groups if any(t in g.lower() for t in search_terms)]
-                            if search_terms else ordered_groups
-                        )
+                        ))
+                        group_search = ", ".join(search_terms)
+                        # A group is shown if it contains any keyword as a whole word/phrase.
+                        if search_terms:
+                            _kw = keyword_matcher(search_terms)
+                            visible_groups = [g for g in ordered_groups if _kw.search(g)]
+                        else:
+                            visible_groups = ordered_groups
 
                         def _on_select_all_toggle(sel_key=sel_key, all_key=all_key, shown=tuple(visible_groups)):
                             # The checkbox is authoritative when toggled: ticking selects every
@@ -1848,7 +1852,8 @@ if df is not None:
                         if group_search:
                             st.caption(f"Showing {len(visible_groups):,} of {len(ordered_groups):,} groups matching “{group_search}”.")
                         else:
-                            st.caption("Separate several values with commas to find more than one group.")
+                            st.caption("Add several keywords to find more than one group. Keywords match whole "
+                                       "words only — “CTO” finds “Co-founder & CTO”, not “Inspectors”.")
 
                         selected_set = set(st.session_state.get(sel_key, ()))
                         groups_table = pd.DataFrame(
@@ -1871,7 +1876,7 @@ if df is not None:
                                 hide_index=True,
                                 width="stretch",
                                 key=(f"split_group_editor_{safe_col}_{st.session_state.get(ver_key, 0)}_"
-                                     f"{int(select_all_groups)}_{hash(group_search) & 0xFFFFFFFF}"),
+                                     f"{int(select_all_groups)}_{hash(group_search.lower()) & 0xFFFFFFFF}"),
                             )
 
                         if not edited_groups.empty:

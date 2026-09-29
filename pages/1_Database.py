@@ -31,8 +31,9 @@ from dataio import (
     forget_file,
     get_upload_size,
     group_download_name,
+    keyword_regex,
+    keyword_terms,
     load_file,
-    split_search_terms,
     validate_upload,
 )
 st.set_page_config(
@@ -432,9 +433,10 @@ def render_master_search(result):
     group_series = values.replace("", "Unknown")
     group_counts = group_series.value_counts().to_dict()
     ordered_groups = [k for k, _ in sorted(group_counts.items(), key=lambda x: -x[1])]
-    lowered = values.str.lower()
-    per_term = " · ".join(f"<b>{html.escape(t)}</b> {int(lowered.str.contains(t.lower(), regex=False).sum()):,}"
-                          for t in terms)
+    per_term = " · ".join(
+        f"<b>{html.escape(t)}</b> {int(values.str.contains(keyword_regex(t), case=False, regex=True).sum()):,}"
+        for t in terms
+    )
     theme.status_line(
         "success", f"{len(found):,} leads found in {len(ordered_groups):,} {html.escape(field)} groups",
         f"Per search value: {per_term}" if len(terms) > 1 else "",
@@ -551,15 +553,17 @@ with tab_master:
             s_field, s_text, s_go = st.columns([1, 3, 1], vertical_alignment="bottom")
             search_field = s_field.selectbox("Search in", list(MASTER_FIELD_MAP),
                                              index=list(MASTER_FIELD_MAP).index("Industry"), key="master_search_field")
-            search_text = s_text.text_input("Search values", key="master_search_text",
-                                            placeholder="e.g. Real Estate, Construction, Software")
+            search_chips = s_text.multiselect("Keywords", options=[], accept_new_options=True,
+                                              key="master_search_keywords",
+                                              placeholder="Type a keyword and press Enter, e.g. Real Estate")
             searched = s_go.form_submit_button("🔎 Search", type="primary", width="stretch")
-            st.caption("Separate several values with commas. Each value matches any lead that contains it.")
+            st.caption("Add one or more keywords. Keywords match whole words only — "
+                       "“CTO” finds “Co-founder & CTO”, not “Inspectors”.")
         if searched:
-            terms = split_search_terms(search_text)
+            terms = keyword_terms(search_chips)
             if not terms:
                 st.session_state.pop("master_search", None)
-                st.error("Type at least one value to search for, then click Search.", icon=":material/error:")
+                st.error("Add at least one keyword to search for, then click Search.", icon=":material/error:")
             else:
                 try:
                     with st.spinner("Searching your Master database…"):
