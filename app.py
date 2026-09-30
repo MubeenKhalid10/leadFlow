@@ -94,7 +94,7 @@ def render_db_error_banner():
             "3. See the **README** for full setup steps.\n\n"
             f"**Technical details:** `{err}`"
         )
-        if st.button("🔄 Retry database connection", key="retry_db_conn"):
+        if st.button("Retry database connection", key="retry_db_conn", icon=":material/refresh:"):
             st.session_state.pop("_db_ready", None)
             st.session_state.pop("_db_error", None)
             st.rerun()
@@ -122,7 +122,7 @@ def cleaned_df_to_records(df):
 # -- Page header (theme CSS & sidebar branding are injected above, before the
 #    auth gate, so the login screen is themed too) --
 theme.page_header(
-    "🧹", "Clean Leads",
+    "mop", "Clean Leads",
     "Upload a lead file, remove the leads you don't want, then download your campaign.",
     show_how=True,
 )
@@ -147,8 +147,7 @@ if not db_is_ready():
 
 
 # Use shared section_header from theme module
-def section_header(number, title, subtitle=None, icon=""):
-    theme.section_header(number, title, subtitle, icon=icon)
+section_header = theme.section_header
 
 
 
@@ -900,7 +899,7 @@ def _start_over():
 _MB = 1024 * 1024
 df = None
 with theme.card("upload"):
-    section_header(1, "Upload your lead file", "Add a CSV or Excel file to begin.", icon="📤")
+    section_header(1, "Upload your lead file", "Add a CSV or Excel file to begin.")
 
     st.session_state.setdefault("raw_uploader_version", 0)
     raw_file_selected = st.file_uploader(
@@ -971,7 +970,6 @@ if df is not None:
         section_header(
             2, "Check columns & choose options",
             "LeadFlow matched your columns automatically. Only <strong>Email</strong> is required.",
-            icon="🔍",
         )
         with st.expander(f"Preview your file — first 10 of {df.shape[0]:,} rows", expanded=False):
             st.dataframe(df.head(10), width="stretch")
@@ -1061,21 +1059,20 @@ if df is not None:
                 _cmp_cols = st.columns(4)
                 with _cmp_cols[0]:
                     selected_master_list_ids = _category_picker(
-                        "master", "🗂️ Master leads",
+                        "master", "Master leads",
                         "Leads already in your main database. Skips people you already have.", "contact_count")
                 with _cmp_cols[1]:
                     selected_bounce_list_ids = _category_picker(
-                        "bounce", "🚫 Bounced",
+                        "bounce", "Bounced",
                         "Emails that bounced before. Skipping them protects your sender reputation.", "email_count")
                 with _cmp_cols[2]:
                     selected_mql_list_ids = _category_picker(
-                        "mql", "🎯 MQL",
+                        "mql", "MQL",
                         "Marketing-qualified leads that are already being worked on.", "email_count")
                 with _cmp_cols[3]:
                     selected_unsub_list_ids = _category_picker(
-                        "unsub", "✋ Unsubscribed",
+                        "unsub", "Unsubscribed",
                         "People who asked not to be contacted.", "email_count")
-                st.caption("Admins manage these lists on the Lead Database page.")
 
         with st.expander("Advanced options — India-based contacts", expanded=False):
             st.caption(
@@ -1097,7 +1094,6 @@ if df is not None:
             3, "Clean your leads",
             "Removes leads with no email, India-based contacts, rows with garbled characters, "
             "duplicates, and leads on the lists you ticked.",
-            icon="🧹",
         )
 
         # Conditional output goes into fixed container slots throughout this page: Streamlit keys
@@ -1105,8 +1101,8 @@ if df is not None:
         # otherwise reset everything below it (e.g. bounce the Download tabs back to the first tab).
         _has_email = "Email" in mapping
         _clean_clicked = st.button(
-            "🧹  Clean again" if "cleaned_df" in st.session_state else "🧹  Clean my leads",
-            type="primary", key="go_clean", disabled=not _has_email,
+            "Clean again" if "cleaned_df" in st.session_state else "Clean my leads",
+            type="primary", key="go_clean", disabled=not _has_email, icon=":material/mop:",
             help=("Runs every cleaning step. Your original file is not changed." if _has_email
                   else "Choose your Email column in step 2 first."),
         )
@@ -1415,15 +1411,10 @@ if df is not None:
                     "Every lead matched a removal rule. Check your options in step 2, then clean again.",
                 )
 
+            # The statement: rows in, why each lead was removed (grouped by kind), rows out.
+            # Lists that weren't ticked say "Not checked" rather than 0. The rules run one
+            # after another, so the rows add up to "Total removed".
             if _start is not None:
-                m1, m2, m3 = st.columns(3)
-                m1.metric("In your file", f"{_start:,}", help="Rows in your file before cleaning.")
-                m2.metric("Removed", f"{_start - _ready:,}", help="Leads removed or set aside while cleaning — see the breakdown below.")
-                m3.metric("Clean leads", f"{_ready:,}", help="Leads in your campaign file after cleaning.")
-
-            # Why leads were removed, grouped by kind. Lists that weren't ticked say "Not checked"
-            # rather than 0. The rules run one after another, so the rows add up to "Removed".
-            if _start is not None and _start > _ready:
                 _removed = metrics.get("removed", {})
                 _groups = []
                 if "removed" in metrics:
@@ -1442,7 +1433,7 @@ if df is not None:
                 if _removed.get("qc"):
                     _quality.append(("Empty rows", "no data in any column", _removed["qc"]))
                 _groups.append(("Data quality", _quality))
-                theme.removal_breakdown(_groups, _start - _ready)
+                theme.removal_breakdown(_groups, _start - _ready, start=_start, final=_ready)
 
             if _left:
                 with st.expander(f"Preview clean leads — first 50 of {_left:,}", expanded=False):
@@ -1458,7 +1449,6 @@ if df is not None:
             section_header(
                 4, "Download your campaign",
                 "Download everything in one file, or split it by country or by another field.",
-                icon="⬇️",
             )
             _dl_done = st.session_state.pop("_split_download_done", None)
             _dl_banner = st.container()
@@ -1484,12 +1474,12 @@ if df is not None:
                      "together in one file.",
             )
 
-            tabs_to_show = ["📄 Full campaign file"]
+            tabs_to_show = ["Full campaign file"]
             if split_by_location:
-                tabs_to_show.append("🌍 By country")
+                tabs_to_show.append("By country")
             if split_by_field:
-                tabs_to_show.append("🗂️ By field")
-            tabs_to_show.append("🧾 Removed leads")
+                tabs_to_show.append("By field")
+            tabs_to_show.append("Removed leads")
 
             all_tabs = st.tabs(tabs_to_show)
             tab_idx = 0
@@ -1504,7 +1494,7 @@ if df is not None:
 
                 if final_df.empty:
                     theme.empty_state(
-                        "📭", "No leads left in your campaign file",
+                        "inbox", "No leads left in your campaign file",
                         "Cleaning removed every lead, or you've already downloaded them all. "
                         "Click <strong>Start over</strong> in step 1 to clean a new file.",
                     )
@@ -1525,7 +1515,8 @@ if df is not None:
                     dl_data, dl_name, dl_mime = make_download(final_df, out_format, "final_campaign_file")
 
                     st.download_button(
-                        f"⬇️ Download campaign file ({out_format.upper()})",
+                        f"Download campaign file ({out_format.upper()})",
+                        icon=":material/download:",
                         data=dl_data,
                         file_name=dl_name,
                         mime=dl_mime,
@@ -1540,7 +1531,7 @@ if df is not None:
                         None, "Save to your Master database",
                         "Optional. Saved leads are skipped automatically the next time you clean a file. "
                         "Leads already in any Master list are never added twice.",
-                        icon="💾",
+                        "save",
                     )
                     if final_df.empty:
                         st.caption("Nothing to save — your campaign file is empty.")
@@ -1561,7 +1552,7 @@ if df is not None:
                             st.warning("Couldn't load your Master lists. You can still create a new one.")
                             st.caption(f"Technical details: {type(e).__name__}: {e}")
 
-                        new_list_label = "➕ Create a new list…"
+                        new_list_label = "+ Create a new list…"
                         save_choice = st.selectbox(
                             "Save into which Master list?",
                             [new_list_label] + existing_names,
@@ -1627,8 +1618,8 @@ if df is not None:
                             new_mask = pd.Series([True] * len(final_df), index=final_df.index)
 
                         if st.button(
-                            f"💾 Save {new_count:,} new leads to Master",
-                            type="primary",
+                            f"Save {new_count:,} new leads to Master",
+                            icon=":material/save:",
                             key="save_to_master_btn",
                             disabled=(new_count == 0),
                         ):
@@ -1674,10 +1665,10 @@ if df is not None:
                     final_df = st.session_state["cleaned_df"]
 
                     if final_df.empty:
-                        theme.empty_state("🎉", "No leads left to split", "Every lead has already been downloaded or removed.")
+                        theme.empty_state("task_alt", "No leads left to split", "Every lead has already been downloaded or removed.")
                     elif country_series.empty or set(country_counts.keys()) <= {LOCATION_EMPTY_LABEL, UNKNOWN_LOCATION_LABEL}:
                         theme.empty_state(
-                            "🌍", "No country information found",
+                            "public", "No country information found",
                             "Pick a Location column in step 2 and clean your leads again to split them by country.",
                         )
                     else:
@@ -1697,7 +1688,8 @@ if df is not None:
                                 country_df = final_df[country_series == selected_country]
                                 safe_name = selected_country.lower().replace('/', '_').replace(' ', '_')
                                 st.download_button(
-                                    f"⬇️ Download {selected_country} ({cnt:,})",
+                                    f"Download {selected_country} ({cnt:,})",
+                                    icon=":material/download:",
                                     data=csv_bytes(country_df),
                                     file_name=f"{safe_filename(selected_country, 'Country_file')}.csv",
                                     mime="text/csv",
@@ -1707,11 +1699,8 @@ if df is not None:
                                     args=(country_df, (), selected_country),
                                     width="stretch",
                                 )
-                            st.markdown(
-                                f'<div class="lf-note">⚠️ Downloading removes these {cnt:,} leads from your '
-                                f'Final Campaign file, so they won\'t be included in later downloads.</div>',
-                                unsafe_allow_html=True,
-                            )
+                            theme.note(f"Downloading removes these {cnt:,} leads from your campaign file, "
+                                       "so they won't be included in later downloads.")
 
                         _legend = [(LOCATION_EMPTY_LABEL, "no location given"),
                                    (UNKNOWN_LOCATION_LABEL, "location couldn't be matched to a country")]
@@ -1757,9 +1746,9 @@ if df is not None:
                     splittable_cols = list(_cols_cache["cols"])
 
                     if final_df.empty:
-                        theme.empty_state("🎉", "No leads left to split", "Every lead has already been downloaded or removed.")
+                        theme.empty_state("task_alt", "No leads left to split", "Every lead has already been downloaded or removed.")
                     elif not splittable_cols:
-                        theme.empty_state("🗂️", "Nothing to split by", "Your leads don't have any filled-in fields to group by.")
+                        theme.empty_state("category", "Nothing to split by", "Your leads don't have any filled-in fields to group by.")
                     else:
                         # Default split column: Industry if available, else first splittable col
                         default_split_col = industry_col_in_df or splittable_cols[0]
@@ -1861,7 +1850,7 @@ if df is not None:
                              for k in visible_groups]
                         )
                         if groups_table.empty:
-                            theme.empty_state("🔎", "No matching groups", f"Nothing matches “{html.escape(group_search)}”. Try a different search.")
+                            theme.empty_state("search_off", "No matching groups", f"Nothing matches “{html.escape(group_search)}”. Try a different search.")
                             edited_groups = groups_table
                         else:
                             # Key includes the column, select-all state, search and clear count so the editor resets when any changes.
@@ -1915,16 +1904,14 @@ if df is not None:
                                     f"{len(selected_groups):,} of {len(ordered_groups):,} groups · {combined_rows:,} leads "
                                     f"({_shown}{'…' if len(selected_groups) > 5 else ''})",
                                 )
-                                st.markdown(
-                                    f'<div class="lf-note">⚠️ Downloading removes these {combined_rows:,} leads from your '
-                                    f'Final Campaign file, so they won\'t be included in later downloads.</div>',
-                                    unsafe_allow_html=True,
-                                )
+                                theme.note(f"Downloading removes these {combined_rows:,} leads from your campaign "
+                                           "file, so they won't be included in later downloads.")
                             with sel_col2:
                                 _grp_label = (selected_groups[0] if len(selected_groups) == 1
                                               else f"{len(selected_groups):,} {split_col_choice} groups")
                                 st.download_button(
-                                    f"⬇️ Download selected ({combined_rows:,} leads)",
+                                    f"Download selected ({combined_rows:,} leads)",
+                                    icon=":material/download:",
                                     data=_build_combined,
                                     file_name=group_download_name(split_col_choice, selected_groups),
                                     mime="text/csv",
@@ -1946,7 +1933,8 @@ if df is not None:
                                 )
                                 one_df = final_df[group_series == one_group]
                                 one_col_dl.download_button(
-                                    f"⬇️ Download {one_group} ({len(one_df):,} leads)",
+                                    f"Download {one_group} ({len(one_df):,} leads)",
+                                    icon=":material/download:",
                                     data=csv_bytes(one_df),
                                     file_name=group_download_name(split_col_choice, [one_group]),
                                     mime="text/csv",
@@ -1967,7 +1955,8 @@ if df is not None:
                 if len(removed_indian_df) > 0:
                     st.dataframe(removed_indian_df.head(20), width="stretch")
                     st.download_button(
-                        "⬇️ Download removed Indian contacts (full list)",
+                        "Download removed India-based contacts (full list)",
+                        icon=":material/download:",
                         data=csv_bytes(removed_indian_df),
                         file_name="removed_indian_contacts.csv",
                         mime="text/csv",
@@ -1982,7 +1971,8 @@ if df is not None:
                 if len(special_chars_df) > 0:
                     st.dataframe(special_chars_df.head(20), width="stretch")
                     st.download_button(
-                        "⬇️ Download uncleaned special-characters file (full list)",
+                        "Download uncleaned special-characters file (full list)",
+                        icon=":material/download:",
                         data=csv_bytes(special_chars_df),
                         file_name="special_characters_separated_uncleaned.csv",
                         mime="text/csv",
@@ -2014,7 +2004,8 @@ if df is not None:
                     st.markdown("**Cleaned preview** — same rows after removing special characters from non-email fields:")
                     st.dataframe(special_chars_cleaned_df.head(20), width="stretch")
                     st.download_button(
-                        "⬇️ Download cleaned special-characters file (full list)",
+                        "Download cleaned special-characters file (full list)",
+                        icon=":material/download:",
                         data=csv_bytes(special_chars_cleaned_df),
                         file_name="special_characters_separated_cleaned.csv",
                         mime="text/csv",
@@ -2029,7 +2020,8 @@ if df is not None:
                 if len(email_special_df) > 0:
                     st.dataframe(email_special_df.head(20), width="stretch")
                     st.download_button(
-                        "⬇️ Download email-special-characters file (full list)",
+                        "Download email-special-characters file (full list)",
+                        icon=":material/download:",
                         data=csv_bytes(email_special_df),
                         file_name="email_special_characters_separated.csv",
                         mime="text/csv",

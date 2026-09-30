@@ -12,7 +12,9 @@ gatherUsageStats = false
 
 [theme]
 base = "light"
-primaryColor = "#4f46e5"
-backgroundColor = "#f7f8fc"
-secondaryBackgroundColor = "#ffffff"
-textColor = "#161a2d"
+primaryColor = "#12305a"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f2f4f6"
+textColor = "#0c1b33"
+# The face itself is loaded by the stylesheet in theme.py / Auth.py.
+font = "'Libre Franklin', 'Segoe UI', sans-serif"

@@ -22,7 +22,7 @@ auth.require_role("admin")
 auth.render_user_badge()
 theme.sidebar_nav(auth.current_user(), current="pages/2_Manage_Users.py")
 
-theme.page_header("👥", "Users & Access", "Choose who can manage the lead database and other users.")
+theme.page_header("group", "Users & Access", "Choose who can manage the lead database and other users.")
 
 try:
     client = auth.get_client()
@@ -33,7 +33,7 @@ except Exception as e:
     st.stop()
 
 if profiles.empty:
-    theme.empty_state("👥", "No users yet", "People appear here after they create an account on the sign-in screen.")
+    theme.empty_state("group", "No users yet", "People appear here after they create an account on the sign-in screen.")
     st.stop()
 
 profiles = profiles.sort_values("created_at")
@@ -44,33 +44,36 @@ with theme.card("users"):
         None, "Team members",
         "<b>Admin</b> — can open the Lead Database and this page. "
         "<b>User</b> — can clean, split and download leads.",
-        icon="👥",
+        "group",
     )
     _admins = int((profiles["role"] == "admin").sum())
-    st.caption(f"{len(profiles)} user(s) · {_admins} admin(s). Pick a new role, then click Save role.")
+    st.caption(
+        f"{len(profiles)} {'user' if len(profiles) == 1 else 'users'} · "
+        f"{_admins} {'admin' if _admins == 1 else 'admins'}. Pick a new role, then click Save role."
+    )
 
     widths = [4, 2, 2, 2]
-    for col, label in zip(st.columns(widths), ["Email", "Joined", "Current role", "Change role"]):
-        col.markdown(f"**{label}**")
-    st.divider()
+    heads = ["Email", "Joined", "Current role", "Change role"]
+    theme.table_header("users", widths, heads)
 
     for row in profiles.itertuples():
-        c1, c2, c3, c4 = st.columns(widths, vertical_alignment="center")
-        c1.markdown(f"**{row.email}**" + (" · _you_" if row.id == me["id"] else ""))
-        c2.write(f"{pd.to_datetime(row.created_at):%d-%b-%Y}")
-        c3.markdown("🛡️ Admin" if row.role == "admin" else "👤 User")
+        c1, c2, c3, c4 = theme.table_row(f"user_{row.id}", widths)
+        theme.table_cell(c1, heads[0], row.email, strong=True,
+                         suffix=' <span class="lf-you">you</span>' if row.id == me["id"] else "")
+        theme.table_cell(c2, heads[1], f"{pd.to_datetime(row.created_at):%d-%b-%Y}")
+        theme.table_cell(c3, heads[2], "Admin" if row.role == "admin" else "User",
+                         icon_name="shield_person" if row.role == "admin" else "person")
 
         with c4:
             is_self = row.id == me["id"]
             new_role = st.selectbox(
-                "Role",
+                heads[3],
                 ["user", "admin"],
                 index=["user", "admin"].index(row.role),
                 format_func=str.title,
                 key=f"role_select_{row.id}",
                 label_visibility="collapsed",
                 disabled=is_self,
-                help="You can't change your own role." if is_self else None,
             )
             if not is_self and new_role != row.role:
                 if st.button("Save role", key=f"save_role_{row.id}", type="primary", width="stretch",
@@ -79,8 +82,7 @@ with theme.card("users"):
                         client.table("profiles").update({"role": new_role}).eq(
                             "id", row.id
                         ).execute()
-                        st.toast(f"{row.email} is now {'an admin' if new_role == 'admin' else 'a standard user'}.", icon="✅")
+                        st.toast(f"{row.email} is now {'an admin' if new_role == 'admin' else 'a standard user'}.", icon=":material/check_circle:")
                         st.rerun()
                     except Exception as e:
                         theme.friendly_error("Couldn't change this role", "Nothing was changed. Please try again.", e)
-        st.divider()

@@ -52,7 +52,7 @@ auth.render_user_badge()
 theme.sidebar_nav(auth.current_user(), current="pages/1_Database.py")
 
 theme.page_header(
-    "🗄️", "Lead Database",
+    "database", "Lead Database",
     "Search, add and manage your saved lists. Leads on these lists can be removed when you clean a file.",
 )
 
@@ -69,7 +69,7 @@ if not _ok:
             "3. See the **README** for full setup steps.\n\n"
             f"**Technical details:** `{_err}`"
         )
-        if st.button("🔄 Retry database connection", key="retry_db_conn"):
+        if st.button("Retry database connection", key="retry_db_conn", icon=":material/refresh:"):
             st.rerun()
     st.stop()
 
@@ -92,13 +92,13 @@ MASTER_FIELD_MAP = {
     "Location": "location",
 }
 
-NEW_LIST_LABEL = "➕ Create a new list…"
+NEW_LIST_LABEL = "+ Create a new list…"
 
 EMAIL_CATEGORIES = {
     # key: (tab label, icon, description shown above the uploader)
-    "mql": ("MQL", "🎯", "Leads already marked as marketing-qualified."),
-    "bounce": ("Bounced", "🚫", "Emails that bounced in past campaigns."),
-    "unsub": ("Unsubscribed", "✋", "People who asked not to be contacted."),
+    "mql": ("MQL", "ads_click", "Leads already marked as marketing-qualified."),
+    "bounce": ("Bounced", "block", "Emails that bounced in past campaigns."),
+    "unsub": ("Unsubscribed", "unsubscribe", "People who asked not to be contacted."),
 }
 
 
@@ -157,9 +157,12 @@ def history_table(category: str | None, limit: int = 200) -> pd.DataFrame:
             "Uploaded by": hist["uploaded_by"],
             "Upload date": local.map(lambda t: f"{t:%d-%b-%Y}"),
             "Upload time": local.map(lambda t: f"{t:%I:%M %p}"),
-            "Status": hist["reverted_at"].map(lambda t: "✓ Added" if pd.isna(t) else f"↩️ Undone {fmt_datetime(t)}"),
+            "Status": hist["reverted_at"].map(lambda t: "Added" if pd.isna(t) else f"Undone {fmt_datetime(t)}"),
         }
     )
+
+
+NO_UPLOADS_TEXT = "No uploads yet"
 
 
 def last_upload_metric(col, category: str) -> None:
@@ -169,13 +172,16 @@ def last_upload_metric(col, category: str) -> None:
     except Exception:
         col.metric("Last upload", "—")
         return
+    if text == NO_UPLOADS_TEXT:
+        col.metric("Last upload", "—", help=text)
+        return
     col.metric("Last upload", text.split(",")[0].split(" · ")[0], help=text)
 
 
 def last_upload_text(category: str) -> str:
     hist = db.get_upload_history(category, 1)
     if hist.empty:
-        return "No uploads yet"
+        return NO_UPLOADS_TEXT
     row = hist.iloc[0]
     return f"{fmt_datetime(row['uploaded_at'])} · {row['file_name']} ({int(row['rows_written']):,} added)"
 
@@ -256,7 +262,7 @@ def show_history(category: str) -> None:
         theme.friendly_error("Couldn't load the upload history", "Try refreshing the page.", e)
         return
     if table.empty:
-        theme.empty_state("🕒", "No uploads yet", "Files you add above will be listed here.")
+        theme.empty_state("history", "No uploads yet", "Files you add above will be listed here.")
     else:
         st.dataframe(table, width="stretch", hide_index=True)
 
@@ -293,15 +299,15 @@ def _delete_list(category, list_id):
 @st.dialog("Delete this list?")
 def confirm_delete_file(category, list_id, name, rows, noun):
     st.markdown(f"**{html.escape(str(name))}** and all **{rows:,} {noun}** in it will be permanently deleted.")
-    st.warning("This can't be undone. Its entries stay in the upload history.", icon="⚠️")
+    st.warning("This can't be undone. Its entries stay in the upload history.", icon=":material/warning:")
     yes, no = st.columns(2)
-    if yes.button("🗑️ Delete permanently", key="del_confirm_file", type="primary", width="stretch"):
+    if yes.button("Delete permanently", key="del_confirm_file", type="primary", width="stretch", icon=":material/delete:"):
         try:
             _delete_list(category, list_id)
         except Exception as e:
             theme.friendly_error("Couldn't delete this list", "Nothing was deleted. Please try again.", e)
             return
-        st.toast(f"Deleted '{name}' ({rows:,} {noun}).", icon="🗑️")
+        st.toast(f"Deleted '{name}' ({rows:,} {noun}).", icon=":material/delete:")
         st.rerun()
     if no.button("Keep it", key="reset_cancel_delete", width="stretch"):
         st.rerun()
@@ -314,37 +320,24 @@ def confirm_revert(upload_id, file_name, list_name, added, noun, when):
         f"**{html.escape(str(list_name))}** on {when}."
     )
     st.caption("Leads added by other uploads, and leads that were already in the list, are not affected.")
-    st.warning("This can't be undone.", icon="⚠️")
+    st.warning("This can't be undone.", icon=":material/warning:")
     yes, no = st.columns(2)
-    if yes.button("↩️ Undo upload", key="del_confirm_revert", type="primary", width="stretch"):
+    if yes.button("Undo upload", key="del_confirm_revert", type="primary", width="stretch", icon=":material/undo:"):
         try:
             removed = db.revert_upload(upload_id)
         except Exception as e:
             theme.friendly_error("Couldn't undo this upload", "Nothing was changed. Please try again.", e)
             return
-        st.toast(f"Upload undone: {removed:,} {noun} removed from '{list_name}'.", icon="↩️")
+        st.toast(f"Upload undone: {removed:,} {noun} removed from '{list_name}'.", icon=":material/undo:")
         st.rerun()
     if no.button("Keep it", key="reset_cancel_revert", width="stretch"):
         st.rerun()
 
 
-def _table_header(key, widths, labels):
-    """Column headings, padded to line up with the boxed rows below them (theme CSS: lf_rowhead_)."""
-    cols = st.container(key=f"lf_rowhead_{key}").columns(widths)
-    for col, label in zip(cols, labels):
-        if label:
-            col.markdown(f"**{label}**")
-
-
-def _table_row(key, widths):
-    """One table row enclosed in its own box (theme CSS: lf_row_)."""
-    return st.container(key=f"lf_row_{key}").columns(widths, vertical_alignment="center")
-
-
 def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows):
     """One row per saved list: created date, rows, approximate size, merges, delete."""
     if lists_df.empty:
-        theme.empty_state("📭", "No lists yet", "Add a file above to create your first list.")
+        theme.empty_state("inbox", "No lists yet", "Add a file above to create your first list.")
         return
     try:
         merges = db.get_merge_counts(category)
@@ -354,16 +347,17 @@ def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows
     widths = [4, 2, 2, 2, 1.5, 1.8]
     st.caption(f"{len(lists_df)} list(s) · {int(lists_df[count_col].sum()):,} {noun} in total. "
                "Size is the approximate space each list uses in the database.")
-    _table_header(f"list_{category}", widths, ["List", "Created", noun.capitalize(), "Size", "Uploads", ""])
+    heads = ["List", "Created", noun.capitalize(), "Size", "Uploads", ""]
+    theme.table_header(f"list_{category}", widths, heads)
     for row in lists_df.itertuples():
         rows = int(getattr(row, count_col))
-        c = _table_row(f"list_{category}_{row.id}", widths)
-        c[0].markdown(f"**{html.escape(str(row.name))}**")
-        c[1].write(fmt_date(row.created_at))
-        c[2].write(f"{rows:,}")
-        c[3].write(f"≈ {fmt_bytes(rows * per_row)}" if per_row else "—")
-        c[4].write(f"{merges.get(int(row.id), 0):,}")
-        if c[5].button("🗑️ Delete", key=f"del_file_{category}_{row.id}", width="stretch",
+        c = theme.table_row(f"list_{category}_{row.id}", widths)
+        theme.table_cell(c[0], heads[0], row.name, strong=True)
+        theme.table_cell(c[1], heads[1], fmt_date(row.created_at))
+        theme.table_cell(c[2], heads[2], f"{rows:,}")
+        theme.table_cell(c[3], heads[3], f"≈ {fmt_bytes(rows * per_row)}" if per_row else "—")
+        theme.table_cell(c[4], heads[4], f"{merges.get(int(row.id), 0):,}")
+        if c[5].button("Delete", key=f"del_file_{category}_{row.id}", width="stretch", icon=":material/delete:",
                        help=f"Permanently delete this list and its {rows:,} {noun}. You'll be asked to confirm."):
             confirm_delete_file(category, int(row.id), row.name, rows, noun)
 
@@ -371,7 +365,7 @@ def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows
 def render_merge_history(category, lists_df, noun):
     """Every merge into one chosen list, with a revert button for each."""
     if lists_df.empty:
-        theme.empty_state("🔀", "No lists yet", "Uploads appear here once you add a file.")
+        theme.empty_state("history", "No lists yet", "Uploads appear here once you add a file.")
         return
     names = {int(r.id): r.name for r in lists_df.itertuples()}
     list_id = st.selectbox(
@@ -384,27 +378,28 @@ def render_merge_history(category, lists_df, noun):
         theme.friendly_error("Couldn't load the merge history", "Try refreshing the page.", e)
         return
     if merges.empty:
-        theme.empty_state("🔀", "No uploads recorded for this list", "Uploads appear here after you add a file to it.")
+        theme.empty_state("history", "No uploads recorded for this list", "Uploads appear here after you add a file to it.")
         return
     widths = [2.2, 3.5, 1.6, 2.6, 2.4, 1.8]
-    _table_header(f"merge_{category}", widths, ["Uploaded", "File", noun.capitalize() + " added", "By", "Status", ""])
+    heads = ["Uploaded", "File", noun.capitalize() + " added", "By", "Status", ""]
+    theme.table_header(f"merge_{category}", widths, heads)
     for m in merges.itertuples():
-        c = _table_row(f"merge_{category}_{m.id}", widths)
+        c = theme.table_row(f"merge_{category}_{m.id}", widths)
         added = int(m.rows_written or 0)
-        c[0].write(fmt_datetime(m.uploaded_at))
-        c[1].write(str(m.file_name))
-        c[2].write(f"{added:,}")
-        c[3].write(m.uploaded_by or "—")
+        theme.table_cell(c[0], heads[0], fmt_datetime(m.uploaded_at))
+        theme.table_cell(c[1], heads[1], m.file_name, strong=True)
+        theme.table_cell(c[2], heads[2], f"{added:,}")
+        theme.table_cell(c[3], heads[3], m.uploaded_by or "—")
         if not pd.isna(m.reverted_at):
-            c[4].write(f"↩️ Undone {fmt_date(m.reverted_at)}")
+            theme.table_cell(c[4], heads[4], f"Undone {fmt_date(m.reverted_at)}", icon_name="undo")
         elif added == 0:
-            c[4].write("Nothing added")
+            theme.table_cell(c[4], heads[4], "Nothing added")
         elif pd.isna(m.batch_created_at):
             c[4].markdown("Can't be undone", help="This upload was recorded before undo was available, and "
                           "its rows couldn't be matched with certainty, so it can't be undone safely.")
         else:
-            c[4].write("✓ In the list")
-            if c[5].button("↩️ Undo", key=f"del_revert_{m.id}", width="stretch",
+            theme.table_cell(c[4], heads[4], "In the list", icon_name="check")
+            if c[5].button("Undo", key=f"del_revert_{m.id}", width="stretch", icon=":material/undo:",
                            help=f"Remove the {added:,} {noun} this upload added. You'll be asked to confirm."):
                 confirm_revert(int(m.id), m.file_name, names[list_id], added, noun, fmt_datetime(m.uploaded_at))
 
@@ -425,7 +420,7 @@ def render_master_search(result):
         st.warning(f"More than {MASTER_SEARCH_LIMIT:,} leads match — showing and downloading the first "
                    f"{MASTER_SEARCH_LIMIT:,}. Narrow your search to get the rest.")
     if found.empty:
-        theme.empty_state("🔎", "No matching leads",
+        theme.empty_state("search_off", "No matching leads",
                           f"No Master lead's {field} matches “{html.escape(', '.join(terms))}”.")
         return
 
@@ -446,7 +441,8 @@ def render_master_search(result):
     all_col, one_sel, one_dl = st.columns([1.2, 1.6, 1.2], vertical_alignment="bottom")
     all_col.caption(f"Downloads as {group_download_name(field, ordered_groups)}")
     all_col.download_button(
-        f"⬇️ Download all ({len(found):,} leads)",
+        f"Download all ({len(found):,} leads)",
+        icon=":material/download:",
         data=lambda df=found: df.to_csv(index=False).encode("utf-8"),
         file_name=group_download_name(field, ordered_groups),
         mime="text/csv", type="primary", key=f"dl_master_search_all_{safe_field}", width="stretch",
@@ -456,7 +452,8 @@ def render_master_search(result):
                                       format_func=lambda g: f"{g} ({group_counts[g]:,} leads)")
         one_df = found[group_series == one_group]
         one_dl.download_button(
-            f"⬇️ Download {one_group} ({group_counts[one_group]:,})",
+            f"Download {one_group} ({group_counts[one_group]:,})",
+            icon=":material/download:",
             data=lambda df=one_df: df.to_csv(index=False).encode("utf-8"),
             file_name=group_download_name(field, [one_group]),
             mime="text/csv", key=f"dl_master_search_one_{safe_field}", width="stretch",
@@ -477,16 +474,16 @@ except Exception as e:
     COUNTS = {c: {"lists": 0, "rows": 0, "unique": 0} for c in db.ALL_CATEGORIES}
 
 
-def _tab_label(icon, label, cat):
-    return f"{icon}  {label} ({COUNTS[cat]['unique']:,})"
+def _tab_label(label, cat):
+    return f"{label} ({COUNTS[cat]['unique']:,})"
 
 
 tab_master, tab_mql, tab_bounce, tab_unsub = st.tabs(
     [
-        _tab_label("🗂️", "Master leads", "master"),
-        _tab_label("🎯", "MQL", "mql"),
-        _tab_label("🚫", "Bounced", "bounce"),
-        _tab_label("✋", "Unsubscribed", "unsub"),
+        _tab_label("Master leads", "master"),
+        _tab_label("MQL", "mql"),
+        _tab_label("Bounced", "bounce"),
+        _tab_label("Unsubscribed", "unsub"),
     ]
 )
 
@@ -498,7 +495,7 @@ with tab_master:
     with theme.card("master_overview"):
         theme.section_header(
             None, "Master leads",
-            "Your main lead database. Leads here are skipped when you clean a new file.", icon="🗂️",
+            "Your main lead database. Leads here are skipped when you clean a new file.", "folder_open",
         )
         m = COUNTS["master"]
         try:
@@ -520,19 +517,19 @@ with tab_master:
 
         with st.expander("Storage & upload limits", expanded=False):
             c3, c4 = st.columns(2)
-            c3.metric("🗄️ Database size", fmt_bytes(stor["database_bytes"]) if stor else "—")
-            c4.metric("🗂️ Master leads storage", fmt_bytes(stor["master_bytes"]) if stor else "—")
+            c3.metric("Database size", fmt_bytes(stor["database_bytes"]) if stor else "—")
+            c4.metric("Master leads storage", fmt_bytes(stor["master_bytes"]) if stor else "—")
 
             c5, c6, c7, c8 = st.columns(4)
             if stor and stor["quota_bytes"]:
                 free = max(stor["quota_bytes"] - stor["database_bytes"], 0)
                 used_pct = min(stor["database_bytes"] / stor["quota_bytes"] * 100, 100)
-                c5.metric("💾 Available Storage", fmt_bytes(free), f"{used_pct:.1f}% of {fmt_bytes(stor['quota_bytes'])} used", delta_color="off")
+                c5.metric("Available storage", fmt_bytes(free), f"{used_pct:.1f}% of {fmt_bytes(stor['quota_bytes'])} used", delta_color="off")
             else:
-                c5.metric("💾 Available Storage", "Not configured")
-            c6.metric("📐 Est. size per 1M records", fmt_bytes(stor["bytes_per_million"]) if stor and stor["bytes_per_million"] else "—")
-            c7.metric("⬆️ Max upload (CSV/XLSX)", fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES))
-            c8.metric("🗜️ Max upload (ZIP/GZ)", fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES))
+                c5.metric("Available storage", "Not configured")
+            c6.metric("Est. size per 1M records", fmt_bytes(stor["bytes_per_million"]) if stor and stor["bytes_per_million"] else "—")
+            c7.metric("Max upload (CSV/XLSX)", fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES))
+            c8.metric("Max upload (ZIP/GZ)", fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES))
             st.caption(
                 f"Sizes are read live from PostgreSQL (`pg_database_size` / `pg_total_relation_size`). "
                 f"A ZIP/GZ upload may expand to at most {fmt_bytes(MAX_ARCHIVE_CONTENT_BYTES)} of data. "
@@ -547,7 +544,7 @@ with tab_master:
     with theme.card("master_search"):
         theme.section_header(
             None, "Search & download",
-            "Find Master leads by field and download them. Your database isn't changed.", icon="🔎",
+            "Find Master leads by field and download them. Your database isn't changed.", "search",
         )
         with st.form("master_search_form", border=False):
             s_field, s_text, s_go = st.columns([1, 3, 1], vertical_alignment="bottom")
@@ -556,7 +553,7 @@ with tab_master:
             search_chips = s_text.multiselect("Keywords", options=[], accept_new_options=True,
                                               key="master_search_keywords",
                                               placeholder="Type a keyword and press Enter, e.g. Real Estate")
-            searched = s_go.form_submit_button("🔎 Search", type="primary", width="stretch")
+            searched = s_go.form_submit_button("Search", type="primary", width="stretch", icon=":material/search:")
             st.caption("Add one or more keywords. Keywords match whole words only — "
                        "“CTO” finds “Co-founder & CTO”, not “Inspectors”.")
         if searched:
@@ -578,7 +575,7 @@ with tab_master:
         theme.section_header(
             None, "Add leads",
             "Upload one or more files. Only new emails are added — nothing already saved is changed or deleted.",
-            icon="📥",
+            "upload_file",
         )
 
         show_import_messages("master_import_files")
@@ -602,7 +599,7 @@ with tab_master:
 
         master_target = pick_target_list(master_names, "master_target")
 
-        if st.button("📥  Add to Master database", type="primary", key="save_import_master",
+        if st.button("Add to Master database", type="primary", key="save_import_master", icon=":material/add:",
                      help="Adds only the new leads from your file(s). Leads already saved are skipped."):
             clean_name = (master_target or "").strip()
             if not master_files:
@@ -678,7 +675,7 @@ with tab_master:
                             ))
                         if written_total:
                             messages.append(("success",
-                                f"✅ **Upload complete** — {written_total:,} new leads were added to Master list "
+                                f"**Upload complete** — {written_total:,} new leads were added to Master list "
                                 f"**'{clean_name}'**. Master database: {before_total:,} → {before_total + written_total:,} leads"
                                 + (f" ({dedup_skipped_total:,} already saved, skipped)." if dedup_skipped_total else ".")
                             ))
@@ -708,7 +705,7 @@ with tab_master:
                         )
 
     with theme.card("master_files"):
-        theme.section_header(None, "Your lists", "Every Master list, its size, and how many uploads it holds.", icon="📋")
+        theme.section_header(None, "Your lists", "Every Master list, its size, and how many uploads it holds.", "list_alt")
         try:
             master_lists_df = db.get_master_lists()
         except Exception as e:
@@ -718,7 +715,7 @@ with tab_master:
                      stor["master_bytes"] if stor else None, m["rows"])
 
     with theme.card("master_history"):
-        theme.section_header(None, "History", "What was added, when, and by whom.", icon="🕒")
+        theme.section_header(None, "History", "What was added, when, and by whom.", "history")
         with st.expander("Uploads per list — undo an upload", expanded=False):
             render_merge_history("master", master_lists_df, "leads")
         with st.expander("All uploads", expanded=False):
@@ -734,7 +731,7 @@ def render_email_category(category: str):
 
     with theme.card(f"{category}_overview"):
         theme.section_header(
-            None, label, description + " Leads with these emails can be removed when you clean a file.", icon=icon,
+            None, label, description + " Leads with these emails can be removed when you clean a file.", icon,
         )
         c1, c2, c3 = st.columns(3)
         c1.metric("Emails", f"{cnt['unique']:,}", help="Unique email addresses — each is counted once.")
@@ -745,7 +742,7 @@ def render_email_category(category: str):
         theme.section_header(
             None, f"Add to {label}",
             "Upload files with an email column — LeadFlow finds it automatically. Emails already saved are skipped.",
-            icon="📥",
+            "upload_file",
         )
 
         uploader_base = f"{category}_import_files"
@@ -770,7 +767,7 @@ def render_email_category(category: str):
 
         target = pick_target_list(names, f"{category}_target")
 
-        if st.button(f"📥  Add to {label}", type="primary", key=f"save_import_{category}",
+        if st.button(f"Add to {label}", type="primary", key=f"save_import_{category}", icon=":material/add:",
                      help="Saves the email addresses from your file(s). Emails already saved are skipped."):
             clean_name = (target or "").strip()
             if not files:
@@ -812,7 +809,7 @@ def render_email_category(category: str):
                             ))
                         if written_total:
                             messages.append(("success",
-                                f"✅ **Upload complete** — {written_total:,} emails were added to {label} list '{clean_name}'."))
+                                f"**Upload complete** — {written_total:,} emails were added to {label} list '{clean_name}'."))
                         elif not skipped_files:
                             messages.append(("info",
                                 f"**Upload complete** — no new emails were added. Every email in the file is already in "
@@ -831,7 +828,7 @@ def render_email_category(category: str):
                         )
 
     with theme.card(f"{category}_files"):
-        theme.section_header(None, "Your lists", f"Every {label} list, its size, and how many uploads it holds.", icon="📋")
+        theme.section_header(None, "Your lists", f"Every {label} list, its size, and how many uploads it holds.", "list_alt")
         try:
             lists_df = db.get_email_lists(category)
         except Exception as e:
@@ -845,7 +842,7 @@ def render_email_category(category: str):
                      stor[f"{category}_bytes"] if stor else None, cnt["rows"])
 
     with theme.card(f"{category}_history"):
-        theme.section_header(None, "History", "What was added, when, and by whom.", icon="🕒")
+        theme.section_header(None, "History", "What was added, when, and by whom.", "history")
         with st.expander("Uploads per list — undo an upload", expanded=False):
             render_merge_history(category, lists_df, "emails")
         with st.expander("All uploads", expanded=False):
