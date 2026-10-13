@@ -1674,44 +1674,103 @@ if df is not None:
                     else:
                         available_countries = [k for k, v in sorted(country_counts.items(), key=lambda x: -x[1]) if v > 0]
                         st.caption(f"Your leads are grouped into **{len(available_countries):,}** countries. "
-                                   "Pick one to download it as its own file.")
-                        col_sel, col_dl = st.columns([2, 1], vertical_alignment="bottom")
-                        with col_sel:
-                            selected_country = st.selectbox(
-                                "Country", available_countries, key="selected_country_dl",
-                                format_func=lambda c: f"{c} — {country_counts.get(c, 0):,} leads",
-                                help="Countries are listed from most to fewest leads.",
-                            )
-                        if selected_country:
-                            cnt = country_counts.get(selected_country, 0)
+                                   "Tick one or more countries below to download them together.")
+
+                        country_sel_key = "split_selected_countries"
+                        country_ver_key = "split_country_editor_ver"
+                        selected_countries = set(st.session_state.get(country_sel_key, ())) & set(available_countries)
+                        countries_table = pd.DataFrame(
+                            [{"Select": country in selected_countries,
+                              "Country": country,
+                              "Leads": country_counts[country]}
+                             for country in available_countries]
+                        )
+                        edited_countries = st.data_editor(
+                            countries_table,
+                            column_config={
+                                "Select": st.column_config.CheckboxColumn("Select", default=False),
+                                "Country": st.column_config.TextColumn("Country"),
+                                "Leads": st.column_config.NumberColumn("Leads", format="%d"),
+                            },
+                            disabled=["Country", "Leads"],
+                            hide_index=True,
+                            width="stretch",
+                            key=f"split_country_editor_{st.session_state.get(country_ver_key, 0)}",
+                        )
+                        visible_selected = set(
+                            edited_countries.loc[
+                                edited_countries["Select"].fillna(False).astype(bool), "Country"
+                            ].tolist()
+                        )
+                        selected_countries = visible_selected
+                        st.session_state[country_sel_key] = selected_countries
+
+                        if selected_countries:
+                            selected_countries = [
+                                country for country in available_countries if country in selected_countries
+                            ]
+                            combined_mask = country_series.isin(selected_countries)
+                            combined_df = final_df[combined_mask]
+                            combined_rows = int(combined_mask.sum())
+                            country_order = {country: i for i, country in enumerate(available_countries)}
+
+                            def _build_country_combined(
+                                df=combined_df,
+                                order=country_order,
+                                countries=country_series[combined_mask],
+                            ):
+                                df = df.assign(__country_order=countries.map(order))
+                                df = df.sort_values("__country_order", kind="stable").drop(
+                                    columns="__country_order"
+                                )
+                                return df.to_csv(index=False).encode("utf-8")
+
+                            col_status, col_dl = st.columns([2, 1])
+                            with col_status:
+                                _shown_countries = ", ".join(
+                                    html.escape(country) for country in selected_countries[:5]
+                                )
+                                theme.status_line(
+                                    "success",
+                                    f"Ready: {html.escape(group_download_name('Country', selected_countries))}",
+                                    f"{len(selected_countries):,} of {len(available_countries):,} countries · "
+                                    f"{combined_rows:,} leads ({_shown_countries}"
+                                    f"{'…' if len(selected_countries) > 5 else ''})",
+                                )
+                                theme.note(
+                                    f"Downloading removes these {combined_rows:,} leads from your campaign "
+                                    "file, so they won't be included in later downloads."
+                                )
                             with col_dl:
-                                country_df = final_df[country_series == selected_country]
-                                safe_name = selected_country.lower().replace('/', '_').replace(' ', '_')
+                                country_label = (
+                                    selected_countries[0]
+                                    if len(selected_countries) == 1
+                                    else f"{len(selected_countries):,} countries"
+                                )
                                 st.download_button(
-                                    f"Download {selected_country} ({cnt:,})",
+                                    f"Download selected ({combined_rows:,} leads)",
                                     icon=":material/download:",
-                                    data=csv_bytes(country_df),
-                                    file_name=f"{safe_filename(selected_country, 'Country_file')}.csv",
+                                    data=_build_country_combined,
+                                    file_name=group_download_name("Country", selected_countries),
                                     mime="text/csv",
                                     type="primary",
-                                    key=f"dl_single_country_{safe_name}",
+                                    key="dl_combined_country",
                                     on_click=remove_downloaded_leads,
-                                    args=(country_df, (), selected_country),
+                                    args=(combined_df, (country_sel_key,), country_label),
                                     width="stretch",
                                 )
-                            theme.note(f"Downloading removes these {cnt:,} leads from your campaign file, "
-                                       "so they won't be included in later downloads.")
+                        else:
+                            theme.status_line(
+                                "next",
+                                "Tick the countries you want in the table above",
+                                "Your combined download will appear here.",
+                            )
 
                         _legend = [(LOCATION_EMPTY_LABEL, "no location given"),
                                    (UNKNOWN_LOCATION_LABEL, "location couldn't be matched to a country")]
                         _legend = [f"<span><b>{k}</b> — {v}</span>" for k, v in _legend if k in country_counts]
                         if _legend:
                             st.markdown(f'<div class="lf-legend">{"".join(_legend)}</div>', unsafe_allow_html=True)
-                        counts_df = pd.DataFrame(
-                            [{"Country": k, "Leads": v} for k, v in sorted(country_counts.items(), key=lambda x: -x[1])]
-                        )
-                        st.dataframe(counts_df, width="stretch", hide_index=True,
-                                     height=min(35 * (len(counts_df) + 1) + 3, 320))
 
             if tab_field is not None:
                 with tab_field:
