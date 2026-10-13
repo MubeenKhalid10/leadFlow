@@ -99,8 +99,10 @@ ONE-TIME SUPABASE SETUP
 
 from __future__ import annotations
 
+import html
 import json
 import os
+from typing import Any
 from urllib.parse import quote, unquote
 
 import streamlit as st
@@ -146,7 +148,7 @@ def _credentials() -> tuple[str, str]:
 
 
 @st.cache_resource(show_spinner=False)
-def _anon_client() -> "Client":
+def _anon_client() -> Any:
     """Process-wide anonymous client (no user session attached)."""
     url, key = _credentials()
     return create_client(url, key)
@@ -311,34 +313,31 @@ def _complete_login(client, session, user):
 # ------------------------------------------------------------------------- #
 # Self-contained so the login screen looks fully branded even when it renders
 # before theme.py's own CSS has had a chance to run (e.g. on first load,
-# before a session exists). Uses the same indigo/Manrope identity as the
-# rest of LeadFlow. If you'd like this pixel-matched to theme.py's exact
-# tokens, share theme.py and these variables can be pointed at it directly.
+# before a session exists). Uses the same navy/Libre Franklin identity as
+# theme.py; keep these variables in step with the tokens there.
 _AUTH_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;500;600;700&display=swap');
 
 :root {
-    --lf-auth-primary: #3c37d6;
-    --lf-auth-primary-2: #5a56eb;
-    --lf-auth-primary-soft: #eef0ff;
-    --lf-auth-title: #161a2d;
-    --lf-auth-muted: #7f869b;
-    --lf-auth-border: #dde2ef;
+    --lf-auth-primary: #12305a;
+    --lf-auth-primary-soft: #e9eef5;
+    --lf-auth-title: #0c1b33;
+    --lf-auth-muted: #5a6679;
+    --lf-auth-border: #d5dae0;
 }
 
-html, body, [class*="css"] { font-family: "Manrope", "Segoe UI", sans-serif !important; }
+html, body, .stApp, [data-testid="stMarkdownContainer"] {
+    font-family: "Libre Franklin", "Segoe UI", sans-serif;
+}
 
 .stApp {
-    background:
-        radial-gradient(1000px 300px at 80% -10%, #e9ecff 0%, rgba(233, 236, 255, 0) 65%),
-        linear-gradient(180deg, #fafbff 0%, #f7f8fc 45%, #f6f7fb 100%);
+    background: #ffffff;
 }
 
 /* ---- Login / sign-up card ---- */
 .lf-auth-wrap {
-    max-width: 440px;
-    margin: 2.5rem auto 0;
+    margin: 2.5rem 0 0;
 }
 
 .lf-auth-brand {
@@ -349,29 +348,30 @@ html, body, [class*="css"] { font-family: "Manrope", "Segoe UI", sans-serif !imp
 }
 
 .lf-auth-brand-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 11px;
-    background: linear-gradient(135deg, var(--lf-auth-primary), var(--lf-auth-primary-2));
+    width: 36px;
+    height: 36px;
+    border-radius: 4px;
+    background: var(--lf-auth-title);
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 1.15rem;
-    box-shadow: 0 8px 16px rgba(60, 55, 214, 0.25);
 }
 
 .lf-auth-brand-name {
-    font-size: 1.4rem;
-    font-weight: 800;
-    letter-spacing: -0.02em;
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
     color: var(--lf-auth-title);
 }
 
 .lf-auth-title {
-    font-size: 1.55rem;
-    font-weight: 800;
+    font-size: 1.6rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
     color: var(--lf-auth-title);
-    margin: 1rem 0 0.15rem;
+    margin: 1.75rem 0 0.25rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--lf-auth-border);
 }
 
 .lf-auth-subtitle {
@@ -380,31 +380,32 @@ html, body, [class*="css"] { font-family: "Manrope", "Segoe UI", sans-serif !imp
     margin-bottom: 1.4rem;
 }
 
-div[data-testid="stVerticalBlockBorderWrapper"]:has(div.st-key-lf_auth_card) {
-    max-width: 440px;
-    margin: 0 auto;
-    border-radius: 16px !important;
-    border: 1px solid var(--lf-auth-border) !important;
-    box-shadow: 0 20px 45px rgba(22, 26, 45, 0.08) !important;
-    background: #ffffff !important;
-    padding: 0.5rem 0.25rem !important;
+/* The form sits on the page under its tabs; no floating card. */
+div.st-key-lf_auth_card [data-testid="stForm"] {
+    border: none !important;
+    padding: 0.5rem 0 0 !important;
 }
 
 /* ---- Access-denied card ---- */
 .lf-auth-denied {
     max-width: 520px;
-    margin: 2rem auto 0;
+    margin: 2rem auto 1.5rem;
     text-align: center;
     padding: 2.25rem 1.75rem;
-    border: 1px solid var(--lf-auth-border);
-    border-radius: 16px;
-    background: #ffffff;
-    box-shadow: 0 20px 45px rgba(22, 26, 45, 0.08);
+    border-top: 1px solid var(--lf-auth-border);
+    border-bottom: 1px solid var(--lf-auth-border);
+}
+
+/* Streamlit's hidden "link to heading" icon would push the heading off centre. */
+.lf-auth-denied [data-testid="stHeaderActionElements"] {
+    display: none !important;
 }
 
 .lf-auth-denied .lf-auth-denied-icon {
     font-size: 2.1rem;
+    line-height: 1;
     margin-bottom: 0.5rem;
+    color: var(--lf-auth-muted);
 }
 
 .lf-auth-denied h3 {
@@ -421,98 +422,14 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(div.st-key-lf_auth_card) {
 .lf-auth-role-pill {
     display: inline-block;
     font-size: 0.72rem;
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
     color: var(--lf-auth-primary);
     background: var(--lf-auth-primary-soft);
-    border-radius: 999px;
-    padding: 0.15rem 0.6rem;
+    border-radius: 2px;
+    padding: 0.15rem 0.5rem;
     margin-top: 0.4rem;
-}
-
-/* ---- Sidebar user card, pinned to the bottom of the sidebar ---- */
-/* Use flexbox to push the user card to the bottom of the sidebar content area */
-[data-testid="stSidebar"] > div:first-child {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-}
-
-[data-testid="stSidebarUserContent"] {
-    display: flex;
-    flex-direction: column;
-    flex-grow: 1;
-}
-
-div.st-key-lf_sidebar_user_box {
-    margin-top: auto !important;
-    padding-bottom: 1rem !important;
-}
-
-/* Ensure navigation doesn't overlap if it gets too long, though flex should handle this */
-[data-testid="stSidebarNav"] {
-    margin-bottom: 1rem;
-}
-
-.lf-sidebar-user-card {
-    display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    padding: 0.75rem 0.85rem;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    margin-bottom: 0.6rem;
-}
-
-.lf-sidebar-user-avatar {
-    flex-shrink: 0;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--lf-auth-primary), var(--lf-auth-primary-2));
-    color: #ffffff;
-    font-weight: 800;
-    font-size: 0.95rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.lf-sidebar-user-info {
-    min-width: 0;
-}
-
-.lf-sidebar-user-email {
-    font-size: 0.82rem;
-    font-weight: 700;
-    color: #f1f2fb;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.lf-sidebar-user-role {
-    font-size: 0.68rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #b9bdf0;
-}
-
-div.st-key-lf_sidebar_user_box .stButton > button {
-    width: 100%;
-    border-radius: 9px !important;
-    font-weight: 700 !important;
-    background: rgba(255, 255, 255, 0.08) !important;
-    color: #f1f2fb !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
-}
-
-div.st-key-lf_sidebar_user_box .stButton > button:hover {
-    background: rgba(255, 255, 255, 0.16) !important;
-    border-color: rgba(255, 255, 255, 0.3) !important;
 }
 </style>
 """
@@ -524,33 +441,48 @@ def _inject_auth_css():
 
 def _render_login_form():
     _inject_auth_css()
-
+    # Signed out, the sidebar would hold nothing but a second copy of the name.
     st.markdown(
+        '<style>.stApp [data-testid="stSidebar"], .stApp button[data-testid="stExpandSidebarButton"], '
+        '.stApp [data-testid="stSidebarCollapsedControl"] { display: none !important; } '
+        '.stApp, .stApp [data-testid="stAppViewContainer"], .stApp [data-testid="stMain"], '
+        '.stApp [data-testid="stHeader"] { background: #ffffff !important; }</style>',
+        unsafe_allow_html=True,
+    )
+
+    # The heading shares the form's column, so the two line up on one left edge.
+    left, mid, right = st.columns([1, 3, 1])
+    mid.markdown(
         """
         <div class="lf-auth-wrap">
             <div class="lf-auth-brand">
-                <div class="lf-auth-brand-icon">⚡</div>
+                <div class="lf-auth-brand-icon">
+                    <svg width="22" height="22" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <path d="M7 10h6m-6 4h10m-10 4h8" stroke="white" stroke-width="2.4" stroke-linecap="round"/>
+                        <circle cx="20" cy="10" r="3" fill="white" fill-opacity="0.9"/>
+                    </svg>
+                </div>
                 <div class="lf-auth-brand-name">LeadFlow</div>
             </div>
-            <div class="lf-auth-title">Sign in to your account</div>
+            <div class="lf-auth-title">Sign in to LeadFlow</div>
             <div class="lf-auth-subtitle">
-                New here? Use <strong>Create account</strong> below — you'll start as a standard user.
+                Clean, filter and split your lead files. New here? Choose <strong>Create account</strong>.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    left, mid, right = st.columns([1, 3, 1])
     with mid:
         with st.container(key="lf_auth_card"):
-            tab_login, tab_signup = st.tabs(["Log in", "Create account"])
+            tab_login, tab_signup = st.tabs(["Sign in", "Create account"])
 
             with tab_login:
                 with st.form("login_form"):
                     email = st.text_input("Email", key="login_email", placeholder="you@company.com")
-                    password = st.text_input("Password", type="password", key="login_password")
-                    submitted = st.form_submit_button("Log in", type="primary", width="stretch")
+                    password = st.text_input("Password", type="password", key="login_password",
+                                             placeholder="Your password")
+                    submitted = st.form_submit_button("Sign in", type="primary", width="stretch", key="go_login")
                 if submitted:
                     try:
                         client = _new_session_client()
@@ -560,7 +492,8 @@ def _render_login_form():
                         _complete_login(client, res.session, res.user)
                         st.rerun()
                     except Exception as e:
-                        st.error("**We couldn't sign you in.** Check your email and password and try again.", icon="⚠️")
+                        st.error("**We couldn't sign you in.** Check your email and password and try again.",
+                                 icon=":material/error:")
                         st.caption(f"Details: {e}")
 
             with tab_signup:
@@ -570,10 +503,11 @@ def _render_login_form():
                     )
                     new_password = st.text_input(
                         "Password", type="password", key="signup_password",
-                        help="At least 6 characters.",
+                        placeholder="At least 6 characters",
                     )
+                    st.caption("New accounts start as a standard user. An admin can give you more access.")
                     submitted_signup = st.form_submit_button(
-                        "Create account", type="primary", width="stretch"
+                        "Create account", type="primary", width="stretch", key="go_signup"
                     )
                 if submitted_signup:
                     try:
@@ -582,16 +516,17 @@ def _render_login_form():
                             {"email": new_email, "password": new_password}
                         )
                         if res.session is None:
-                            st.info(
-                                "✅ Account created. Check your email to confirm it, "
-                                "then log in on the **Log in** tab."
+                            st.success(
+                                "**Account created.** Check your email to confirm it, "
+                                "then sign in on the **Sign in** tab.",
+                                icon=":material/check_circle:",
                             )
                         else:
                             _complete_login(client, res.session, res.user)
                             st.rerun()
                     except Exception as e:
                         st.error("**We couldn't create your account.** Check your email address and use a password "
-                                 "of at least 6 characters, then try again.", icon="⚠️")
+                                 "of at least 6 characters, then try again.", icon=":material/error:")
                         st.caption(f"Details: {e}")
 
     st.stop()
@@ -624,24 +559,29 @@ def require_role(*roles: str):
         st.markdown(
             f"""
             <div class="lf-auth-denied">
-                <div class="lf-auth-denied-icon">🚫</div>
+                <div class="lf-auth-denied-icon"><span class="lf-icon" aria-hidden="true">lock</span></div>
                 <h3>You need {needed} access</h3>
-                <p>Signed in as <strong>{user['email']}</strong></p>
-                <span class="lf-auth-role-pill">Current role: {user['role']}</span>
+                <p>Signed in as <strong>{html.escape(str(user['email']))}</strong></p>
+                <span class="lf-auth-role-pill">Current role: {html.escape(str(user['role']))}</span>
                 <p style="margin-top: 1rem;">
-                    Ask an admin to upgrade your role from the <strong>Manage Users</strong> page
-                    if you believe this is a mistake.
+                    Ask an admin to change your role on the <strong>Users &amp; Access</strong> page
+                    if you need this page.
                 </p>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        _, link_col, _ = st.columns([2, 1, 2])
+        try:
+            link_col.page_link("app.py", label="Go to Clean Leads", icon=":material/mop:")
+        except Exception:  # page registry unavailable (e.g. headless tests); the sidebar menu still works
+            pass
         st.stop()
 
 
 def render_user_badge():
-    """Sidebar widget pinned to the bottom of the sidebar (via flex CSS in
-    _AUTH_CSS): who's signed in, their role, and a logout button. Safe to
+    """Sidebar widget pinned to the bottom of the sidebar (styled in
+    theme.py): who's signed in, their role, and a logout button. Safe to
     call on every page after require_login()/require_role()."""
     user = current_user()
     if not user:
@@ -649,20 +589,20 @@ def render_user_badge():
     _inject_auth_css()
     with st.sidebar:
         with st.container(key="lf_sidebar_user_box"):
-            initial = (user["email"] or "?")[0].upper()
+            initial = html.escape((user["email"] or "?")[0].upper())
             role_label = "Admin" if user["role"] == "admin" else "User"
             st.markdown(
                 f"""
                 <div class="lf-sidebar-user-card">
                     <div class="lf-sidebar-user-avatar">{initial}</div>
                     <div class="lf-sidebar-user-info">
-                        <div class="lf-sidebar-user-email">{user['email']}</div>
+                        <div class="lf-sidebar-user-email" title="{html.escape(str(user['email']), quote=True)}">{html.escape(str(user['email']))}</div>
                         <div class="lf-sidebar-user-role">{role_label}</div>
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("Log out", key="_sidebar_logout"):
+            if st.button("Sign out", key="logout_sidebar", icon=":material/logout:", width="stretch"):
                 log_out()
                 st.rerun()

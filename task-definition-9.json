@@ -1,0 +1,102 @@
+{
+    "family":  "leadflow",
+    "containerDefinitions":  [
+                                 {
+                                     "name":  "leadflow",
+                                     "image":  "513594860131.dkr.ecr.ap-southeast-1.amazonaws.com/leadflow:aws-20260930-v2",
+                                     "cpu":  0,
+                                     "portMappings":  [
+                                                          {
+                                                              "containerPort":  8501,
+                                                              "hostPort":  8501,
+                                                              "protocol":  "tcp"
+                                                          }
+                                                      ],
+                                     "essential":  true,
+                                     "environment":  [
+                                                         {
+                                                             "name":  "STREAMLIT_BROWSER_GATHER_USAGE_STATS",
+                                                             "value":  "false"
+                                                         },
+                                                         {
+                                                             "name":  "STREAMLIT_SERVER_HEADLESS",
+                                                             "value":  "true"
+                                                         }
+                                                     ],
+                                     "mountPoints":  [
+
+                                                     ],
+                                     "volumesFrom":  [
+
+                                                     ],
+                                     "secrets":  [
+                                                     {
+                                                         "name":  "SUPABASE_URL",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:SUPABASE_URL::"
+                                                     },
+                                                     {
+                                                         "name":  "SUPABASE_KEY",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:SUPABASE_KEY::"
+                                                     },
+                                                     {
+                                                         "name":  "PG_HOST",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PG_HOST::"
+                                                     },
+                                                     {
+                                                         "name":  "PG_PORT",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PG_PORT::"
+                                                     },
+                                                     {
+                                                         "name":  "PG_DATABASE",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PG_DATABASE::"
+                                                     },
+                                                     {
+                                                         "name":  "PG_USER",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PG_USER::"
+                                                     },
+                                                     {
+                                                         "name":  "PG_PASSWORD",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PG_PASSWORD::"
+                                                     },
+                                                     {
+                                                         "name":  "PGSSLMODE",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PGSSLMODE::"
+                                                     },
+                                                     {
+                                                         "name":  "PG_STORAGE_QUOTA_MB",
+                                                         "valueFrom":  "arn:aws:secretsmanager:ap-southeast-1:513594860131:secret:leadflow/production-DG1vNp:PG_STORAGE_QUOTA_MB::"
+                                                     }
+                                                 ],
+                                     "stopTimeout":  30,
+                                     "logConfiguration":  {
+                                                              "logDriver":  "awslogs",
+                                                              "options":  {
+                                                                              "awslogs-group":  "/ecs/leadflow",
+                                                                              "awslogs-region":  "ap-southeast-1",
+                                                                              "awslogs-stream-prefix":  "app"
+                                                                          }
+                                                          },
+                                     "systemControls":  [
+
+                                                        ]
+                                 }
+                             ],
+    "taskRoleArn":  "arn:aws:iam::513594860131:role/leadflow-ecs-task",
+    "executionRoleArn":  "arn:aws:iam::513594860131:role/leadflow-ecs-execution",
+    "networkMode":  "awsvpc",
+    "volumes":  [
+
+                ],
+    "placementConstraints":  [
+
+                             ],
+    "requiresCompatibilities":  [
+                                    "FARGATE"
+                                ],
+    "cpu":  "1024",
+    "memory":  "4096",
+    "runtimePlatform":  {
+                            "cpuArchitecture":  "X86_64",
+                            "operatingSystemFamily":  "LINUX"
+                        }
+}

@@ -19,6 +19,7 @@ Master/Bounce suppression data lives in PostgreSQL (see db.py) and is managed on
 the "Manage Suppression Database" page — it is no longer uploaded on each run.
 """
 
+import codecs
 import html
 import io
 import json
@@ -32,13 +33,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+try:
+    # Keep XLSX downloads available in deployments that do not install the
+    # optional, faster writer.
+    import importlib
+    xlsxwriter = importlib.import_module("xlsxwriter")
+except (ImportError, ModuleNotFoundError):
+    xlsxwriter = None
 
 import db
 import theme
 import Auth as auth
+from dataio import group_download_name, keyword_matcher, keyword_terms, safe_filename
 
 st.set_page_config(
-    page_title="LeadFlow — Lead Data Cleaning",
+    page_title="Clean Leads — LeadFlow",
     page_icon="⚡",
     layout="wide",
 )
@@ -72,9 +81,10 @@ def db_is_ready():
 def render_db_error_banner():
     err = st.session_state.get("_db_error") or "Unknown error"
     st.error(
-        "⚠️ **The lead database isn't connected.** You can still clean files, but your saved "
+        "**The lead database isn't connected.** You can still clean files, but your saved "
         "lists (Master, Bounced, MQL, Unsubscribed) can't be excluded and results can't be "
-        "saved until it's back."
+        "saved until it's back.",
+        icon=":material/error:",
     )
     with st.expander("How to fix this (for your administrator)", expanded=False):
         st.markdown(
@@ -84,7 +94,7 @@ def render_db_error_banner():
             "3. See the **README** for full setup steps.\n\n"
             f"**Technical details:** `{err}`"
         )
-        if st.button("🔄 Retry database connection", key="retry_db_conn"):
+        if st.button("Retry database connection", key="retry_db_conn", icon=":material/refresh:"):
             st.session_state.pop("_db_ready", None)
             st.session_state.pop("_db_error", None)
             st.rerun()
@@ -109,11 +119,13 @@ def cleaned_df_to_records(df):
     return records
 
 
-# -- Top bar (theme CSS & sidebar branding are injected above, before the
+# -- Page header (theme CSS & sidebar branding are injected above, before the
 #    auth gate, so the login screen is themed too) --
-st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
-theme.render_topbar()
-st.markdown('</div>', unsafe_allow_html=True)
+theme.page_header(
+    "mop", "Clean Leads",
+    "Upload a lead file, remove the leads you don't want, then download your campaign.",
+    show_how=True,
+)
 theme.sidebar_nav(auth.current_user())
 
 
@@ -135,8 +147,7 @@ if not db_is_ready():
 
 
 # Use shared section_header from theme module
-def section_header(number, title, subtitle=None):
-    theme.section_header(number, title, subtitle)
+section_header = theme.section_header
 
 
 
@@ -186,6 +197,8 @@ SPECIAL_CHARS_PATTERN = re.compile(
 SPECIAL_CHARS_COUNT_PATTERN = re.compile(r"[^\x00-\x7F]|[~*!#$%^?]")
 
 COUNTRIES_JSON_PATH = Path(__file__).parent / "data" / "countries.json"
+LOCATION_EMPTY_LABEL = "Location Empty"
+UNKNOWN_LOCATION_LABEL = "Unknown Location"
 MAX_UNCOMPRESSED_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_COMPRESSED_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_CONTENT_BYTES = 250 * 1024 * 1024
@@ -389,11 +402,47 @@ def load_country_reference(json_path_str):
         for k, v in city_alias_overrides.items()
     }
 
+    # Built once here (this function is cached) for the city fallback in
+    # classify_country_from_location. City keys are space-separated [a-z0-9] tokens, so a
+    # boundary-aware match inside a part is exactly a run of whole tokens equal to the key.
+    # The rank keeps city_to_countries order, so the first matching city stays the same.
+    city_rank = {
+        city_key: (rank, countries_set)
+        for rank, (city_key, countries_set) in enumerate(
+            (k, v) for k, v in city_to_countries.items() if len(k) >= 4
+        )
+    }
+    max_city_tokens = max((len(k.split()) for k in city_rank), default=0)
+
+    # Extra country names/aliases and state/province names from the optional
+    # "country_keywords" block. A state only identifies its parent country.
+    keyword_to_country = {}
+    state_to_country = {}
+    for country, entry in (payload.get("country_keywords") or {}).items():
+        for kw in [country, *entry.get("aliases", [])]:
+            keyword_to_country.setdefault(normalize_place_text(kw), country)
+        for state in entry.get("states", []):
+            state_to_country.setdefault(normalize_place_text(state), country)
+
+    def _keyword_pattern(keys):
+        # Whole-token match anywhere in the normalized text; longest keyword first
+        # so "south sudan" wins over "sudan" and "guinea bissau" over "guinea".
+        keys = sorted((k for k in keys if k), key=len, reverse=True)
+        if not keys:
+            return None
+        return re.compile(r"(?<![a-z0-9])(?:" + "|".join(re.escape(k) for k in keys) + r")(?![a-z0-9])")
+
     return {
         "country_name_lookup": country_name_lookup,
         "alias_lookup": alias_lookup,
         "city_to_countries": city_to_countries,
         "city_alias_lookup": city_alias_lookup,
+        "city_rank": city_rank,
+        "max_city_tokens": max_city_tokens,
+        "keyword_to_country": keyword_to_country,
+        "keyword_pattern": _keyword_pattern(keyword_to_country),
+        "state_to_country": state_to_country,
+        "state_pattern": _keyword_pattern(state_to_country),
     }
 
 
@@ -403,14 +452,19 @@ def classify_country_from_location(location_text, country_ref):
     Rules (in priority order):
     1. If a country name (or known alias) appears ANYWHERE in the location text,
        return that country immediately — city/state tokens are ignored.
-    2. If no country name is found, scan the location parts LEFT-TO-RIGHT and
+    2. Otherwise, a country keyword/alias from "country_keywords" anywhere in the
+       text, then a state/province keyword (mapped to its parent country).
+    3. If no country name is found, scan the location parts LEFT-TO-RIGHT and
        return the country of the FIRST city that matches.
-    3. If nothing matches, return "Unknown".
+    4. If nothing matches, return "Unknown Location". A blank/whitespace-only
+       location returns "Location Empty".
     """
+    if location_text is None or not str(location_text).strip():
+        return LOCATION_EMPTY_LABEL
     text_raw = str(location_text)
     normalized = normalize_place_text(text_raw)
     if not normalized:
-        return "Unknown"
+        return UNKNOWN_LOCATION_LABEL
 
     country_name_lookup = country_ref["country_name_lookup"]
     alias_lookup = country_ref["alias_lookup"]
@@ -450,6 +504,13 @@ def classify_country_from_location(location_text, country_ref):
         if f" {alias_norm} " in full_text:
             return country
 
+    # 3) Country keyword/alias, then state/province keyword → parent country.
+    for pattern_key, lookup_key in (("keyword_pattern", "keyword_to_country"), ("state_pattern", "state_to_country")):
+        pattern = country_ref.get(pattern_key)
+        match = pattern.search(normalized) if pattern else None
+        if match:
+            return country_ref[lookup_key][match.group(0)]
+
     # ── PRIORITY 2: City-based fallback — left-to-right, first match wins ────
     # Scan parts in the order they appear in the location string. The first
     # part that resolves to a known city is used immediately — no scoring.
@@ -462,12 +523,18 @@ def classify_country_from_location(location_text, country_ref):
         if not matched_countries:
             # Boundary-aware phrase match: e.g. "san francisco bay area" →
             # "san francisco", while avoiding loose partial-fragment matches.
-            for city_key, countries_set in city_to_countries.items():
-                if len(city_key) < 4:
-                    continue
-                if re.search(rf"(?<![a-z0-9]){re.escape(city_key)}(?![a-z0-9])", part):
-                    matched_countries = countries_set
-                    break
+            # Looks up every run of whole tokens instead of scanning every city; the
+            # lowest-ranked hit is the city the full scan would have found first.
+            city_rank = country_ref["city_rank"]
+            tokens = part.split()
+            best = None
+            for size in range(1, min(len(tokens), country_ref["max_city_tokens"]) + 1):
+                for start in range(len(tokens) - size + 1):
+                    hit = city_rank.get(" ".join(tokens[start:start + size]))
+                    if hit and (best is None or hit[0] < best[0]):
+                        best = hit
+            if best:
+                matched_countries = best[1]
         if matched_countries:
             # Return immediately on first city hit (deterministic left-to-right)
             if len(matched_countries) == 1:
@@ -479,7 +546,7 @@ def classify_country_from_location(location_text, country_ref):
             return sorted(matched_countries)[0]
 
     # ── No match — location present but not in countries.json ────────────────
-    return "Unknown"
+    return UNKNOWN_LOCATION_LABEL
 
 
 def classify_countries_fast(location_series, country_ref):
@@ -487,8 +554,8 @@ def classify_countries_fast(location_series, country_ref):
     Vectorized via unique location mapping for ultra-fast performance on large datasets."""
     unique_locs = location_series.dropna().unique()
     loc_to_country = {loc: classify_country_from_location(loc, country_ref) for loc in unique_locs}
-    loc_to_country[""] = "Unknown"
-    return location_series.map(loc_to_country).fillna("Unknown")
+    loc_to_country[""] = LOCATION_EMPTY_LABEL
+    return location_series.map(loc_to_country).fillna(LOCATION_EMPTY_LABEL)
 
 
 def classify_countries(location_series, country_ref):
@@ -561,6 +628,21 @@ def validate_upload(file):
 
     return None
 
+def _is_valid_utf8(file, chunk_size=1 << 20):
+    """True if the whole upload decodes as UTF-8. Streams it in chunks, keeping nothing."""
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    file.seek(0)
+    try:
+        while chunk := file.read(chunk_size):
+            decoder.decode(chunk)
+        decoder.decode(b"", final=True)
+        return True
+    except UnicodeDecodeError:
+        return False
+    finally:
+        file.seek(0)
+
+
 def load_file_internal(file):
     """Load CSV, XLSX, XLS, or ZIP/GZ archives with memory-efficient parsing."""
     filename = file.name.lower()
@@ -579,7 +661,7 @@ def load_file_internal(file):
                             inner_f.seek(0)
                             return pd.read_csv(inner_f, encoding="latin1", encoding_errors="replace", low_memory=False)
                     else:
-                        return pd.read_excel(inner_f)
+                        return pd.read_excel(inner_f, engine="calamine")
 
         elif filename.endswith((".gz", ".gzip")):
             try:
@@ -590,6 +672,9 @@ def load_file_internal(file):
 
         elif filename.endswith(".csv"):
             encodings_to_try = ["utf-8", "utf-8-sig", "cp1252", "latin1"]
+            if not _is_valid_utf8(file):
+                # Both UTF-8 attempts would fail, but only after parsing most of the file.
+                encodings_to_try = ["cp1252", "latin1"]
             for enc in encodings_to_try:
                 try:
                     file.seek(0)
@@ -601,11 +686,12 @@ def load_file_internal(file):
 
         elif filename.endswith(".xlsx"):
             file.seek(0)
-            return pd.read_excel(file, engine="openpyxl")
+            # calamine reads the same values as openpyxl, several times faster.
+            return pd.read_excel(file, engine="calamine")
 
         elif filename.endswith(".xls"):
             file.seek(0)
-            return pd.read_excel(file, engine="xlrd")
+            return pd.read_excel(file, engine="calamine")
 
         else:
             raise ValueError(f"Unsupported file format: {file.name}. Please upload CSV, XLSX, XLS, ZIP, or GZ.")
@@ -634,7 +720,24 @@ def load_file(file):
     cache_key = f"_df_cache_{getattr(file, 'name', '')}_{getattr(file, 'size', 0)}"
     if cache_key not in st.session_state:
         st.session_state[cache_key] = load_file_internal(file)
+    # Only the active raw file needs to stay in memory; release the one it replaced.
+    prev_key = st.session_state.get("_raw_df_cache_key")
+    if prev_key != cache_key:
+        if prev_key:
+            st.session_state.pop(prev_key, None)
+        st.session_state["_raw_df_cache_key"] = cache_key
     return st.session_state[cache_key]
+
+
+def validate_active_upload(file):
+    """validate_upload() for the active raw file, remembered per upload: the answer can't
+    change between reruns, and for .gz files each check decompresses the whole archive."""
+    key = (getattr(file, "file_id", None), file.name, get_upload_size(file))
+    cached = st.session_state.get("_active_upload_check")
+    if not cached or cached[0] != key:
+        cached = (key, validate_upload(file))
+        st.session_state["_active_upload_check"] = cached
+    return cached[1]
 
 
 def get_email_series(df, mapping):
@@ -656,6 +759,49 @@ def csv_bytes(df):
     return lambda: df.to_csv(index=False).encode("utf-8")
 
 
+def xlsx_bytes(df):
+    """The XLSX file pandas + openpyxl would write, built row by row with XlsxWriter (~2.5x faster).
+
+    Text is stored with openpyxl's rule (a value starting with "=" and longer than one
+    character becomes a formula) and missing values stay empty. Anything other than text
+    or a missing value goes through the original pandas + openpyxl writer unchanged.
+    """
+    if xlsxwriter is None:
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False, engine="openpyxl")
+        return buf.getvalue()
+
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"strings_to_urls": False, "constant_memory": True})
+    ws = wb.add_worksheet("Sheet1")
+
+    def put(r, c, v):
+        if len(v) > 1 and v.startswith("="):
+            ws.write_formula(r, c, v)
+        else:
+            ws.write_string(r, c, v)
+
+    plain = all(isinstance(c, str) for c in df.columns)
+    if plain:
+        for c, name in enumerate(df.columns):
+            put(0, c, name)
+        for r, row in enumerate(df.itertuples(index=False, name=None), start=1):
+            for c, v in enumerate(row):
+                if isinstance(v, str):
+                    put(r, c, v)
+                elif not (v is None or v is pd.NA or (isinstance(v, float) and v != v)):
+                    plain = False
+                    break
+            if not plain:
+                break
+    wb.close()
+    if plain:
+        return buf.getvalue()
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine="openpyxl")
+    return buf.getvalue()
+
+
 def make_download(df, fmt, base_name):
     """Return (data_callable, file_name, mime) for the requested format ('csv', 'xlsx', 'zip')."""
     if fmt == "zip":
@@ -666,11 +812,7 @@ def make_download(df, fmt, base_name):
             return buf.getvalue()
         return _build, f"{base_name}.zip", "application/zip"
     if fmt == "xlsx":
-        def _build():
-            buf = io.BytesIO()
-            df.to_excel(buf, index=False, engine="openpyxl")
-            return buf.getvalue()
-        return _build, f"{base_name}.xlsx", XLSX_MIME
+        return (lambda: xlsx_bytes(df)), f"{base_name}.xlsx", XLSX_MIME
     return csv_bytes(df), f"{base_name}.csv", "text/csv"
 
 
@@ -695,6 +837,14 @@ def remove_downloaded_leads(downloaded_df, reset_keys=(), label="your selection"
     # Build every new value first and only then swap them in, so a failure part-way
     # leaves the Final Campaign exactly as it was.
     new_final = final_df[keep].reset_index(drop=True)
+    old_token = st.session_state.get("run_token")
+    new_token = uuid.uuid4().hex
+    # Removing rows doesn't change whether the remaining leads are already in a Master
+    # list, so the Save-to-Master preview is kept (re-aligned) instead of re-querying.
+    dedup = st.session_state.get("_dedup_preview")
+    new_dedup = None
+    if dedup and dedup.get("key") == old_token and len(dedup["new_mask"]) == len(final_df):
+        new_dedup = {"key": new_token, "new_mask": pd.Series(dedup["new_mask"].to_numpy()[keep])}
     country_series = st.session_state.get("country_series")
     new_country = None
     if country_series is not None and len(country_series) == len(final_df):
@@ -705,259 +855,266 @@ def remove_downloaded_leads(downloaded_df, reset_keys=(), label="your selection"
         st.session_state["country_series"] = new_country
         st.session_state["country_counts"] = new_country.value_counts().to_dict()
     # Row positions changed, so masks cached against the old frame are stale.
-    st.session_state["run_token"] = uuid.uuid4().hex
+    st.session_state["run_token"] = new_token
     st.session_state.pop("_dedup_preview", None)
+    if new_dedup is not None:
+        st.session_state["_dedup_preview"] = new_dedup
     for k in reset_keys:
         st.session_state[k] = False
     # Shown once, above the download tabs, on the rerun this click triggers.
     st.session_state["_split_download_done"] = (label, removed, len(new_final))
 
 
-# ---------------- FILE UPLOADS ----------------
-section_header(
-    "01-Upload", "Upload your lead file",
-    "Add a CSV or Excel file of leads. LeadFlow will clean it and get it ready for your campaign.",
-)
-st.markdown(
-    '<div class="upload-card">📁 <strong>1.</strong> Drop your file in the box below &nbsp;·&nbsp; '
-    '<strong>2.</strong> Tick the saved lists to exclude &nbsp;·&nbsp; '
-    '<strong>3.</strong> Click <strong>&quot;Use this file&quot;</strong></div>',
-    unsafe_allow_html=True,
+# ---------------- RESULTS STATE ----------------
+# Everything a cleaning run leaves in session state. Cleared when a different file is
+# uploaded, so results from the previous file are never shown under the new one.
+_RESULT_KEYS = (
+    "cleaned_df", "run_token", "report", "metrics", "country_series", "country_counts",
+    "master_suppressed_list_ids", "_dedup_preview", "removed_indian_df",
+    "special_chars_removed_df", "special_chars_email_df", "_split_cols_cache",
+    "_special_chars_cleaned_cache", "_split_download_done",
 )
 
+
+def _upload_identity(file):
+    return None if file is None else (getattr(file, "file_id", None), file.name, get_upload_size(file))
+
+
+def _clear_results():
+    for k in _RESULT_KEYS:
+        st.session_state.pop(k, None)
+
+
+def _start_over():
+    """Callback for "Start over": forget the file in use and its results, and empty the uploader."""
+    st.session_state["active_raw_file"] = None
+    _clear_results()
+    cache_key = st.session_state.pop("_raw_df_cache_key", None)
+    if cache_key:
+        st.session_state.pop(cache_key, None)
+    st.session_state["raw_uploader_version"] = st.session_state.get("raw_uploader_version", 0) + 1
+
+
+# ---------------- FILE UPLOAD ----------------
 _MB = 1024 * 1024
-with st.expander("💡 Uploading a large file?", expanded=False):
-    st.markdown(
-        f"- CSV and Excel files can be up to **{MAX_UNCOMPRESSED_UPLOAD_BYTES // _MB} MB**.\n"
-        f"- ZIP or GZ files can be up to **{MAX_COMPRESSED_UPLOAD_BYTES // _MB} MB** "
-        f"(and up to {MAX_ARCHIVE_CONTENT_BYTES // _MB} MB once unzipped).\n"
-        "- For big files, compress the CSV first: right-click it and choose "
-        "**Send to → Compressed (zipped) folder**. This usually shrinks it by about 90%, "
-        "so it uploads much faster and is less likely to time out."
+df = None
+with theme.card("upload"):
+    section_header(1, "Upload your lead file", "Add a CSV or Excel file to begin.")
+
+    st.session_state.setdefault("raw_uploader_version", 0)
+    raw_file_selected = st.file_uploader(
+        "Lead file",
+        type=["csv", "xlsx", "xls", "zip", "gz"],
+        key=f"raw_{st.session_state['raw_uploader_version']}",
+        # Anything bigger is refused by validate_upload anyway; this stops it before a long upload.
+        max_upload_size=MAX_COMPRESSED_UPLOAD_BYTES // _MB,
+        help="The export you want cleaned — from a scraper, CRM, or list purchase.",
     )
+    # A newly chosen file is used straight away. A file that can't be used is refused
+    # here with the reason, and any file already in use stays in use.
+    if raw_file_selected is not None:
+        upload_error = validate_active_upload(raw_file_selected)
+        if upload_error:
+            theme.status_line("error", "This file can't be used", html.escape(upload_error))
+        elif _upload_identity(raw_file_selected) != _upload_identity(st.session_state.get("active_raw_file")):
+            st.session_state["active_raw_file"] = raw_file_selected
+            _clear_results()
 
-st.session_state.setdefault("raw_uploader_version", 0)
-
-st.markdown(
-    '<div class="lf-upload-label">📄 Lead file '
-    '<span class="lf-upload-required">Required</span></div>',
-    unsafe_allow_html=True,
-)
-
-raw_file_selected = st.file_uploader(
-    "Drop your lead file here, or click Browse files",
-    type=["csv", "xlsx", "xls", "zip", "gz"],
-    key=f"raw_{st.session_state['raw_uploader_version']}",
-    # Anything bigger is refused by validate_upload anyway; this stops it before a long upload.
-    max_upload_size=MAX_COMPRESSED_UPLOAD_BYTES // _MB,
-    help="The messy export you want cleaned — from a scraper, CRM, or list purchase. Supports CSV, XLSX, XLS, ZIP, or GZ.",
-)
-st.caption(
-    f"Accepted: CSV, Excel (XLSX/XLS), ZIP or GZ · up to {MAX_UNCOMPRESSED_UPLOAD_BYTES // _MB} MB "
-    f"({MAX_COMPRESSED_UPLOAD_BYTES // _MB} MB if compressed)"
-)
-
-# ---- Compare against (Master / Bounce / MQL / Unsub from the database) ----
-# Shown right next to the uploader so the whole workflow is visible without scrolling.
-st.markdown(
-    '<div class="lf-upload-label">🚫 Exclude leads you don\'t want</div>',
-    unsafe_allow_html=True,
-)
-st.caption("Any lead whose email is on a list you tick below is removed from your results.")
-selected_master_list_ids = []
-selected_bounce_list_ids = []
-selected_mql_list_ids = []
-selected_unsub_list_ids = []
-if not db_is_ready():
-    st.warning(
-        "The lead database isn't connected, so saved lists can't be excluded right now. "
-        "You can still clean your file — see the message at the top of the page."
-    )
-else:
-    try:
-        _cat_lists = {
-            "master": db.get_master_lists(),
-            "bounce": db.get_bounce_lists(),
-            "mql": db.get_email_lists("mql"),
-            "unsub": db.get_email_lists("unsub"),
-        }
-    except Exception as e:
-        _cat_lists = {}
-        st.warning("Couldn't load your saved lists, so they can't be excluded this time. Try refreshing the page.")
-        st.caption(f"Technical details: {type(e).__name__}: {e}")
-
-    def _category_picker(cat, label, help_text, count_col):
-        """Checkbox for one category; when ticked, a multiselect of its lists (all by default)."""
-        lists_df = _cat_lists.get(cat)
-        if lists_df is None or lists_df.empty:
-            st.checkbox(f"{label} (no lists yet)", value=False, disabled=True, key=f"cmp_{cat}_empty",
-                        help=help_text + " Add a list on the Database page to use this.")
-            return []
-        labels = {int(r.id): f"{r.name} ({int(getattr(r, count_col)):,})" for r in lists_df.itertuples()}
-        total = int(lists_df[count_col].sum())
-        checked = st.checkbox(f"{label} — {total:,}", value=True, key=f"cmp_{cat}", help=help_text)
-        if not checked:
-            return []
-        options = list(labels.keys())
-        return st.multiselect(
-            f"{label} lists",
-            options=options,
-            default=options,
-            format_func=lambda i, m=labels: m.get(i, str(i)),
-            key=f"sel_{cat}_lists",
-            label_visibility="collapsed",
+    active_raw_file = st.session_state.get("active_raw_file")
+    if active_raw_file is not None:
+        _active_name = html.escape(getattr(active_raw_file, "name", "Your file"))
+        try:
+            with st.spinner(f"Reading {_active_name}…"):
+                df = load_file(active_raw_file)
+        except Exception as e:
+            theme.friendly_error(
+                "We couldn't open your file",
+                "Make sure it's a valid CSV, Excel (XLSX/XLS), ZIP or GZ file and that it isn't damaged "
+                "or password-protected, then upload it again.",
+                e,
+            )
+        status_col, reset_col = st.columns([4, 1], vertical_alignment="center")
+        with status_col:
+            if df is not None:
+                theme.status_line(
+                    "success", "File uploaded",
+                    f"<b>{_active_name}</b> · {df.shape[0]:,} rows · {df.shape[1]:,} columns",
+                )
+        reset_col.button(
+            "Start over", key="reset_start_over", on_click=_start_over, width="stretch",
+            help="Clear this file and its results so you can upload a different one.",
         )
-
-    _cmp_cols = st.columns(4)
-    with _cmp_cols[0]:
-        selected_master_list_ids = _category_picker(
-            "master", "🗂️ Master leads",
-            "Leads already in your main database. Skips people you already have.", "contact_count")
-    with _cmp_cols[1]:
-        selected_bounce_list_ids = _category_picker(
-            "bounce", "🚫 Bounced",
-            "Emails that bounced before. Skipping them protects your sender reputation.", "email_count")
-    with _cmp_cols[2]:
-        selected_mql_list_ids = _category_picker(
-            "mql", "🎯 MQL",
-            "Marketing-qualified leads that are already being worked on.", "email_count")
-    with _cmp_cols[3]:
-        selected_unsub_list_ids = _category_picker(
-            "unsub", "✋ Unsubscribed",
-            "People who asked not to be contacted.", "email_count")
-    st.caption("Tick a list to exclude it; pick specific lists in the box below it. "
-               "Admins manage these lists on the **Database** page.")
-
-if st.button("📤  Use this file", type="primary",
-             help="Loads your file so you can check its columns before cleaning."):
-    upload_error = validate_upload(raw_file_selected) if raw_file_selected is not None else None
-    if raw_file_selected is None:
-        st.warning("Choose a file first — drag it into the box above or click **Browse files**.")
-    if upload_error:
-        st.error(upload_error)
-        st.session_state["active_raw_file"] = None
+        # (go_clean is True on the run where Clean was just clicked; results appear further down.)
+        if df is not None and "cleaned_df" not in st.session_state and not st.session_state.get("go_clean"):
+            theme.status_line("next", "Next: check your columns below, then click Clean my leads.")
     else:
-        st.session_state["active_raw_file"] = raw_file_selected
-
-active_raw_file = st.session_state.get("active_raw_file")
-if active_raw_file is not None:
-    upload_error = validate_upload(active_raw_file)
-    if upload_error:
-        st.error(upload_error)
-        st.stop()
-
-if active_raw_file is not None:
-    try:
-        with st.spinner("Reading your file…"):
-            df = load_file(active_raw_file)
-    except Exception as e:
-        theme.friendly_error(
-            "We couldn't open your file",
-            "Make sure it's a valid CSV, Excel (XLSX/XLS), ZIP or GZ file and that it isn't damaged "
-            "or password-protected, then upload it again.",
-            e,
+        # Upload tips only matter until a file is in use.
+        st.caption(
+            f"Up to {MAX_UNCOMPRESSED_UPLOAD_BYTES // _MB} MB for CSV or Excel "
+            f"({MAX_COMPRESSED_UPLOAD_BYTES // _MB} MB for ZIP or GZ)."
         )
-        st.stop()
+        with st.expander("Uploading a large file?", expanded=False):
+            st.markdown(
+                f"- CSV and Excel files can be up to **{MAX_UNCOMPRESSED_UPLOAD_BYTES // _MB} MB**.\n"
+                f"- ZIP or GZ files can be up to **{MAX_COMPRESSED_UPLOAD_BYTES // _MB} MB** "
+                f"(and up to {MAX_ARCHIVE_CONTENT_BYTES // _MB} MB once unzipped).\n"
+                "- For big files, compress the CSV first: right-click it and choose "
+                "**Send to → Compressed (zipped) folder**. This usually shrinks it by about 90%, "
+                "so it uploads much faster and is less likely to time out."
+            )
 
-    section_header(
-        "02-Review", "Check your data",
-        f"<strong>{html.escape(getattr(active_raw_file, 'name', 'Your file'))}</strong> — here are the first 10 rows "
-        "so you can confirm it's the right file.",
-    )
-    summary_cols = st.columns(4)
-    summary_cols[0].metric("Leads in file", f"{df.shape[0]:,}", help="Number of rows in your file, before cleaning.")
-    summary_cols[1].metric("Columns", f"{df.shape[1]:,}", help="Number of columns found in your file.")
-
-    st.dataframe(df.head(10), width="stretch")
-    st.caption(f"Showing 10 of {df.shape[0]:,} rows · {df.shape[1]} columns")
-
+if df is not None:
     auto_mapping = auto_map_columns(df)
 
-    section_header(
-        "03-Options", "Match columns & choose options",
-        "LeadFlow matched your file's columns automatically. Check them, then pick your cleaning options.",
-    )
-    st.caption(
-        "Only **Email** is required. Fields shown as (none) weren't found in your file and will be left blank."
-    )
-    options = ["(none)"] + list(df.columns)
-    mapping = {}
-    map_cols = st.columns(4)
-    fields_to_map = ["Full Name", "First Name", "Last Name", "Company", "Email", "Job Title", "Industry", "Location"]
-    for i, field in enumerate(fields_to_map):
-        default_col = auto_mapping.get(field, "(none)")
-        field_missing = default_col == "(none)"
-        default_index = options.index(default_col) if default_col in options else 0
-        with map_cols[i % 4]:
-            help_text = "No matching column found in this file" if field_missing else FIELD_HELP.get(field)
-            selected = st.selectbox(
-                field,
-                options,
-                index=default_index,
-                key=f"map_{field}",
-                disabled=field_missing,
-                help=help_text,
+    with theme.card("options"):
+        section_header(
+            2, "Check columns & choose options",
+            "LeadFlow matched your columns automatically. Only <strong>Email</strong> is required.",
+        )
+        with st.expander(f"Preview your file — first 10 of {df.shape[0]:,} rows", expanded=False):
+            st.dataframe(df.head(10), width="stretch")
+
+        st.markdown('<div class="lf-group-label">Match your columns</div>', unsafe_allow_html=True)
+        options = ["(none)"] + list(df.columns)
+        mapping = {}
+        map_cols = st.columns(4)
+        fields_to_map = ["Full Name", "First Name", "Last Name", "Company", "Email", "Job Title", "Industry", "Location"]
+        for i, field in enumerate(fields_to_map):
+            default_col = auto_mapping.get(field, "(none)")
+            field_missing = default_col == "(none)"
+            default_index = options.index(default_col) if default_col in options else 0
+            with map_cols[i % 4]:
+                help_text = (
+                    "Not found automatically. Pick the matching column, or leave it as (none)."
+                    if field_missing else FIELD_HELP.get(field)
+                )
+                selected = st.selectbox(
+                    field,
+                    options,
+                    index=default_index,
+                    key=f"map_{field}",
+                    help=help_text,
+                )
+            if selected != "(none)":
+                mapping[field] = selected
+
+        if "Email" not in mapping:
+            theme.status_line(
+                "warning", "Choose your Email column",
+                "Every lead needs an email address. Pick the column that holds them above.",
             )
-        if selected != "(none)":
-            mapping[field] = selected
 
-    if "Email" not in mapping:
-        st.warning(
-            "**No Email column selected.** LeadFlow needs an email address for every lead, so every row "
-            "would be removed. Pick your email column above before cleaning."
+        with theme.subcard("exclude"):
+            # ---- Compare against (Master / Bounce / MQL / Unsub from the database) ----
+            st.markdown(
+                '<div class="lf-group-label">Remove leads already on your lists</div>',
+                unsafe_allow_html=True,
+            )
+            st.caption("Any lead whose email is on a ticked list is removed when you clean.")
+            selected_master_list_ids = []
+            selected_bounce_list_ids = []
+            selected_mql_list_ids = []
+            selected_unsub_list_ids = []
+            if not db_is_ready():
+                theme.status_line(
+                    "warning", "Saved lists are unavailable",
+                    "The lead database isn't connected, so they can't be removed right now. "
+                    "You can still clean your file.",
+                )
+            else:
+                try:
+                    _cat_lists = {
+                        "master": db.get_master_lists(),
+                        "bounce": db.get_bounce_lists(),
+                        "mql": db.get_email_lists("mql"),
+                        "unsub": db.get_email_lists("unsub"),
+                    }
+                except Exception as e:
+                    _cat_lists = {}
+                    st.warning("Couldn't load your saved lists, so they can't be excluded this time. Try refreshing the page.")
+                    st.caption(f"Technical details: {type(e).__name__}: {e}")
+
+                def _category_picker(cat, label, help_text, count_col):
+                    """Checkbox for one category; when ticked, a multiselect of its lists (all by default)."""
+                    lists_df = _cat_lists.get(cat)
+                    if lists_df is None or lists_df.empty:
+                        st.checkbox(f"{label} (no lists yet)", value=False, disabled=True, key=f"cmp_{cat}_empty",
+                                    help=help_text + " Add a list on the Lead Database page to use this.")
+                        return []
+                    labels = {int(r.id): f"{r.name} ({int(getattr(r, count_col)):,})" for r in lists_df.itertuples()}
+                    total = int(lists_df[count_col].sum())
+                    checked = st.checkbox(f"{label} — {total:,}", value=True, key=f"cmp_{cat}", help=help_text)
+                    if not checked:
+                        return []
+                    options = list(labels.keys())
+                    return st.multiselect(
+                        f"{label} lists",
+                        options=options,
+                        default=options,
+                        format_func=lambda i, m=labels: m.get(i, str(i)),
+                        key=f"sel_{cat}_lists",
+                        label_visibility="collapsed",
+                    )
+
+                _cmp_cols = st.columns(4)
+                with _cmp_cols[0]:
+                    selected_master_list_ids = _category_picker(
+                        "master", "Master leads",
+                        "Leads already in your main database. Skips people you already have.", "contact_count")
+                with _cmp_cols[1]:
+                    selected_bounce_list_ids = _category_picker(
+                        "bounce", "Bounced",
+                        "Emails that bounced before. Skipping them protects your sender reputation.", "email_count")
+                with _cmp_cols[2]:
+                    selected_mql_list_ids = _category_picker(
+                        "mql", "MQL",
+                        "Marketing-qualified leads that are already being worked on.", "email_count")
+                with _cmp_cols[3]:
+                    selected_unsub_list_ids = _category_picker(
+                        "unsub", "Unsubscribed",
+                        "People who asked not to be contacted.", "email_count")
+
+        with st.expander("Advanced options — India-based contacts", expanded=False):
+            st.caption(
+                "Choose how LeadFlow spots India-based contacts. Every removed contact is listed in the "
+                "**Removed leads** tab after cleaning, with the reason it matched."
+            )
+            check_location = st.checkbox(
+                "Check the Location column for Indian cities, states or 'India'", value=True,
+                help="Uses the mapped Location field. Note: if your 'Location' column is really a sales "
+                     "territory/region assignment rather than the contact's actual address, this can misfire.",
+            )
+            check_domain = st.checkbox(
+                "Check for email addresses ending in .in", value=False,
+                help="Flags any email address whose domain ends in the .in (India) TLD.",
+            )
+
+    with theme.card("clean"):
+        section_header(
+            3, "Clean your leads",
+            "Removes leads with no email, India-based contacts, rows with garbled characters, "
+            "duplicates, and leads on the lists you ticked.",
         )
 
-    with st.expander("🧭 Remove contacts based in India", expanded=True):
-        st.caption(
-            "Choose how LeadFlow spots India-based contacts. If too many leads are being removed, "
-            "untick one option and clean again. Every removed contact is listed in the "
-            "**Removed leads** tab after cleaning, with the reason it matched."
+        # Conditional output goes into fixed container slots throughout this page: Streamlit keys
+        # widgets and tabs by position, so an element that only appears on some reruns would
+        # otherwise reset everything below it (e.g. bounce the Download tabs back to the first tab).
+        _has_email = "Email" in mapping
+        _clean_clicked = st.button(
+            "Clean again" if "cleaned_df" in st.session_state else "Clean my leads",
+            type="primary", key="go_clean", disabled=not _has_email, icon=":material/mop:",
+            help=("Runs every cleaning step. Your original file is not changed." if _has_email
+                  else "Choose your Email column in step 2 first."),
         )
-        check_location = st.checkbox(
-            "Check the Location column for Indian cities, states or 'India'", value=True,
-            help="Uses the mapped Location field. Note: if your 'Location' column is really a sales "
-                 "territory/region assignment rather than the contact's actual address, this can misfire.",
-        )
-        check_domain = st.checkbox(
-            "Check for email addresses ending in .in", value=False,
-            help="Flags any email address whose domain ends in the .in (India) TLD.",
-        )
-
-    with st.expander("🗂️ How do you want to download your leads?", expanded=True):
-        st.caption(
-            "You can always download the full campaign file. Tick the extra ways you'd like to split it — "
-            "the split downloads appear in the Download step after cleaning."
-        )
-        split_by_location = st.checkbox(
-            "Split by country", value=True,
-            key="split_by_location",
-            help="Groups the cleaned output by detected country and lets you download each country separately. "
-                 "Requires a mapped Location column.",
-        )
-        split_by_field = st.checkbox(
-            "Split by another field (Job Title, Industry, Company…)", value=False,
-            key="split_by_field",
-            help="Groups the cleaned output by any column you choose (Industry, Job Title, Company, ...). "
-                 "Tick the groups you want and download them combined into one file.",
-        )
-
-    section_header(
-        "04-Clean", "Clean your leads",
-        "Removes leads with no email, India-based contacts, rows with garbled characters, "
-        "duplicates, and anyone on the lists you ticked in step 1.",
-    )
-
-    # Conditional output goes into fixed container slots throughout this page: Streamlit keys
-    # widgets and tabs by position, so an element that only appears on some reruns would
-    # otherwise reset everything below it (e.g. bounce the Download tabs back to the first tab).
-    _clean_clicked = st.button("🧹  Clean my leads", type="primary",
-                               help="Runs every cleaning step. Your original file is not changed.")
-    _clean_area = st.container()
+        _clean_area = st.container()
+        _results_area = st.container()
     if _clean_clicked:
-        with _clean_area.status("Cleaning your leads…", expanded=False) as _clean_status:
+        with _clean_area.status(f"Cleaning {len(df):,} leads…", expanded=False) as _clean_status:
 
             report = []
             start_count = len(df)
+            # Rows each rule removed, for the results summary (None = that check didn't run).
+            removed_counts = {}
             report.append(f"Starting rows: {start_count:,}")
 
             # ---- STEP 1: Standardize ----
@@ -979,11 +1136,30 @@ if active_raw_file is not None:
                     std[field] = ""
             report.append(f"Step 1 - Standardized columns. Fields kept: {[c for c in FINAL_COLUMNS if c in mapping or c in std.columns]}")
 
+            # Every other source column rides along unchanged (original name and data) so the
+            # final campaign keeps all input columns. The cleaning steps below only look at the
+            # standard columns, so these never affect which rows are kept.
+            _mapped_source_cols = {mapping[f] for f in FINAL_COLUMNS if f in mapping}
+            extra_columns = []
+            for col in df.columns:
+                if col in _mapped_source_cols:
+                    continue
+                out_name = str(col)
+                while out_name in std.columns or out_name == "__email_lower":
+                    out_name = f"{out_name} (original)"
+                std[out_name] = df[col].to_numpy()
+                extra_columns.append(out_name)
+            if extra_columns:
+                report.append(f"Step 1 - Kept {len(extra_columns):,} other column(s) from your file: {extra_columns}")
+
             # ---- STEP 2: Remove blank email records ----
             _clean_status.update(label="Removing leads with no email address…")
             before = len(std)
-            std["Email"] = std["Email"].astype(str).str.strip()
+            # fillna first: pandas 3 keeps empty cells as missing through astype(str), which
+            # would otherwise slip past the blank checks below.
+            std["Email"] = std["Email"].fillna("").astype(str).str.strip()
             std = std[(std["Email"] != "") & (std["Email"].str.lower() != "nan") & (std["Email"].str.lower() != "none")].reset_index(drop=True)
+            removed_counts["blank_email"] = before - len(std)
             report.append(f"Step 2 - Removed blank emails: {before - len(std):,} rows removed")
 
             # ---- STEP 3: Remove Indian contacts ----
@@ -1036,20 +1212,17 @@ if active_raw_file is not None:
             before = len(std)
             std = std[~any_special_mask].reset_index(drop=True)
 
-            # Fast vectorized C-regex cleaning of non-email text in remaining rows
+            # Tidy whitespace in the remaining rows' non-email text. Every row with a special
+            # character in any field was just moved to the audit file, so there are none
+            # left to strip here.
             cleanable_columns = [c for c in FINAL_COLUMNS if c != "Email" and c in std.columns]
-            rows_changed_after_clean = 0
             for col in cleanable_columns:
-                has_special = std[col].str.contains(SPECIAL_CHARS_COUNT_PATTERN, regex=True, na=False)
-                if has_special.any():
-                    rows_changed_after_clean += int(has_special.sum())
-                std[col] = std[col].str.replace(SPECIAL_CHARS_COUNT_PATTERN, "", regex=True).str.replace(r"\s+", " ", regex=True).str.strip()
+                std[col] = std[col].str.replace(r"\s+", " ", regex=True).str.strip()
 
             report.append(
                 f"Step 4 - Separated special-character rows into audit file: {before - len(std):,} rows removed from final output "
                 f"({rows_with_special_chars_email:,} emails had special characters)"
                 # f"{total_special_chars_email:,} special characters found in Email field total). "
-                # f"Then cleaned non-email text fields in remaining rows: {rows_changed_after_clean:,} rows cleaned"
             )
             del any_special_mask, field_masks, email_special_mask
             gc.collect()
@@ -1062,26 +1235,30 @@ if active_raw_file is not None:
             std = std.drop_duplicates(subset="__email_lower", keep="first").reset_index(drop=True)
             report.append(f"Step 5 - Removed in-file duplicates: {duplicate_count:,} duplicate rows removed")
 
+            # One upload of the emails serves every list check in steps 6–7c; each check
+            # only looks at the emails the earlier checks left (nothing is sent until needed).
+            _probe = db.EmailProbe(std["__email_lower"].tolist())
+
             # ---- STEP 6: Remove records already in selected Master list(s) ----
             if db_is_ready() and selected_master_list_ids:
                 try:
                     _clean_status.update(label="Checking against your Master leads…")
                     with st.spinner("Checking against your Master leads…"):
                         # Server-side lookup: only the emails that match come back.
-                        master_emails = db.find_existing_master_emails(
-                            std["__email_lower"].tolist(), selected_master_list_ids
-                        )
+                        master_emails = _probe.take_master(selected_master_list_ids)
                 except Exception as e:
+                    _probe.close()
                     _clean_status.update(label="Cleaning stopped", state="error", expanded=True)
                     theme.friendly_error(
                         "Couldn't check your Master leads",
                         "The lead database didn't respond, so cleaning stopped. Please try again in a moment, "
-                        "or untick Master leads in step 1 to clean without it.",
+                        "or untick Master leads in step 2 to clean without it.",
                         e,
                     )
                     st.stop()
                 before = len(std)
                 std = std[~std["__email_lower"].isin(master_emails)].reset_index(drop=True)
+                removed_counts["master"] = before - len(std)
                 report.append(
                     f"Step 6 - Removed emails already in selected Master list(s): "
                     f"{before - len(std):,} rows removed ({len(master_emails):,} matches found)"
@@ -1098,20 +1275,20 @@ if active_raw_file is not None:
                 try:
                     _clean_status.update(label="Checking against your Bounced list…")
                     with st.spinner("Checking against your Bounced list…"):
-                        bounce_emails = db.find_existing_bounce_emails(
-                            std["__email_lower"].tolist(), selected_bounce_list_ids
-                        )
+                        bounce_emails = _probe.take("bounce", selected_bounce_list_ids)
                 except Exception as e:
+                    _probe.close()
                     _clean_status.update(label="Cleaning stopped", state="error", expanded=True)
                     theme.friendly_error(
                         "Couldn't check your Bounced list",
                         "The lead database didn't respond, so cleaning stopped. Please try again in a moment, "
-                        "or untick Bounced in step 1 to clean without it.",
+                        "or untick Bounced in step 2 to clean without it.",
                         e,
                     )
                     st.stop()
                 before = len(std)
                 std = std[~std["__email_lower"].isin(bounce_emails)].reset_index(drop=True)
+                removed_counts["bounce"] = before - len(std)
                 report.append(
                     f"Step 7 - Removed bounced emails: "
                     f"{before - len(std):,} rows removed ({len(bounce_emails):,} matches found)"
@@ -1132,18 +1309,20 @@ if active_raw_file is not None:
                     try:
                         _clean_status.update(label=f"Checking against your {_label} list…")
                         with st.spinner(f"Checking against your {_label} list…"):
-                            _hits = db.find_existing_emails(_cat, std["__email_lower"].tolist(), _ids)
+                            _hits = _probe.take(_cat, _ids)
                     except Exception as e:
+                        _probe.close()
                         _clean_status.update(label="Cleaning stopped", state="error", expanded=True)
                         theme.friendly_error(
                             f"Couldn't check your {_label} list",
                             "The lead database didn't respond, so cleaning stopped. Please try again in a moment, "
-                            f"or untick {_label} in step 1 to clean without it.",
+                            f"or untick {_label} in step 2 to clean without it.",
                             e,
                         )
                         st.stop()
                     before = len(std)
                     std = std[~std["__email_lower"].isin(_hits)].reset_index(drop=True)
+                    removed_counts[_cat] = before - len(std)
                     report.append(
                         f"Step {_step} - Removed {_label} emails: "
                         f"{before - len(std):,} rows removed ({len(_hits):,} matches found)"
@@ -1155,10 +1334,11 @@ if active_raw_file is not None:
                 else:
                     report.append(f"Step {_step} - No {_label} list selected, step skipped")
 
+            _probe.close()
             std = std.drop(columns="__email_lower")
 
             # ---- STEP 8: Arrange final column sequence ----
-            std = std[[c for c in FINAL_COLUMNS if c in std.columns]]
+            std = std[[c for c in FINAL_COLUMNS if c in std.columns] + extra_columns]
 
             # Drop Industry/Location columns entirely if never available and fully empty
             for optional_col in ["Industry", "Location"]:
@@ -1169,10 +1349,11 @@ if active_raw_file is not None:
             before = len(std)
             valid_mask = (std["Email"] != "") & (std.ne("").any(axis=1))
             std = std[valid_mask].reset_index(drop=True)
+            removed_counts["qc"] = before - len(std)
             report.append(f"Step 9 - Final QC pass: removed {before - len(std):,} blank/empty rows")
 
             dup_check = int(std["Email"].str.lower().duplicated().sum())
-            blank_email_check = int((std["Email"].astype(str).str.strip() == "").sum())
+            blank_email_check = int((std["Email"].fillna("").astype(str).str.strip() == "").sum())
             report.append(f"Final QC - Duplicate emails remaining: {dup_check:,}")
             report.append(f"Final QC - Blank emails remaining: {blank_email_check:,}")
             report.append(f"Final row count: {len(std):,} (started at {start_count:,})")
@@ -1185,10 +1366,10 @@ if active_raw_file is not None:
                         country_ref = load_country_reference(str(COUNTRIES_JSON_PATH))
                     country_series = classify_countries_fast(std["Location"], country_ref)
                 except Exception as e:
-                    st.warning(f"Country split fallback: could not parse countries.json ({e}). All rows marked as Unknown.")
-                    country_series = pd.Series(["Unknown"] * len(std), index=std.index)
+                    st.warning(f"Country split fallback: could not parse countries.json ({e}). All rows marked as {UNKNOWN_LOCATION_LABEL}.")
+                    country_series = pd.Series([UNKNOWN_LOCATION_LABEL] * len(std), index=std.index)
             else:
-                country_series = pd.Series(["Unknown"] * len(std), index=std.index)
+                country_series = pd.Series([LOCATION_EMPTY_LABEL] * len(std), index=std.index)
 
             st.session_state["cleaned_df"] = std
             st.session_state["run_token"] = uuid.uuid4().hex
@@ -1207,571 +1388,703 @@ if active_raw_file is not None:
                 "special_char_rows": len(st.session_state.get("special_chars_removed_df", [])),
                 "special_char_total": total_special_chars_email,
                 "special_char_emails": rows_with_special_chars_email,
+                "start_count": start_count,
+                "final_count": len(std),
+                "removed": removed_counts,
             }
             gc.collect()
-            _clean_status.update(
-                label=f"Cleaning complete — {len(std):,} leads are ready for your campaign",
-                state="complete",
-            )
+            _clean_status.update(label="Cleaning complete", state="complete")
 
     if "cleaned_df" in st.session_state:
-        section_header(
-            "05-Results", "Review your results",
-            "What LeadFlow removed, and a preview of your clean leads.",
-        )
-
-        _ready = len(st.session_state["cleaned_df"])
-        _ready_banner = st.container()
-        if _ready:
-            _ready_banner.success(f"**{_ready:,} leads are clean and ready for your campaign.**", icon="✅")
-
-        metrics = st.session_state.get("metrics", {})
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("🧹 Duplicates removed", f"{metrics.get('duplicates_removed', 0):,}",
-                  help="Leads that appeared more than once in your file (same email). The first copy is kept.")
-        m2.metric("🌏 India-based removed", f"{metrics.get('indian_removed', 0):,}",
-                  help="Removed using the options you chose in step 3. See the Removed leads tab for details.")
-        m3.metric("✉️ Odd-character emails", f"{metrics.get('special_char_emails', 0):,}",
-                  help="Email addresses containing unusual symbols or letters. These rows are set aside for you to check.")
-        m4.metric("🔣 Rows set aside", f"{metrics.get('special_char_rows', 0):,}",
-                  help="Rows with garbled or special characters in any field. Download them from the Removed leads tab.")
-
-        with st.expander("📋 Step-by-step report (what LeadFlow did)", expanded=False):
-            for line in st.session_state["report"]:
-                st.write("- " + line)
-
-        st.subheader("Preview of your clean leads")
-        with st.container():
-            if _ready:
-                st.caption("The first 50 rows, in the order they'll appear in your download.")
-                st.dataframe(st.session_state["cleaned_df"].head(50), width="stretch")
-                st.caption(f"{_ready:,} leads · {st.session_state['cleaned_df'].shape[1]} columns")
-            else:
-                theme.empty_state(
-                    "📭", "No leads left in your campaign file",
-                    "Either every lead was removed during cleaning, or you've already downloaded them all. "
-                    "Upload a new file to start again.",
-                )
-
-        section_header(
-            "06-Download", "Download your campaign",
-            "Get the full campaign file, or split it by country or by another field.",
-        )
-        _dl_done = st.session_state.pop("_split_download_done", None)
-        _dl_banner = st.container()
-        if _dl_done:
-            _dl_label, _dl_removed, _dl_left = _dl_done
-            _dl_banner.success(
-                f"**Download complete** — {_dl_removed:,} leads from **{_dl_label}** were downloaded "
-                f"and removed from your Final Campaign file. {_dl_left:,} leads remain.",
-                icon="✅",
-            )
-
-        split_by_location = st.session_state.get("split_by_location", True)
-        split_by_field = st.session_state.get("split_by_field", False)
-
-        tabs_to_show = ["📄 Full campaign file"]
-        if split_by_location:
-            tabs_to_show.append("🌍 By country")
-        if split_by_field:
-            tabs_to_show.append("🗂️ By field")
-        tabs_to_show.append("🧾 Removed leads")
-
-        all_tabs = st.tabs(tabs_to_show)
-        tab_idx = 0
-        tab_main = all_tabs[tab_idx]; tab_idx += 1
-        tab_country = all_tabs[tab_idx] if split_by_location else None; tab_idx += (1 if split_by_location else 0)
-        tab_field = all_tabs[tab_idx] if split_by_field else None; tab_idx += (1 if split_by_field else 0)
-        tab_audit = all_tabs[tab_idx]
-
-        with tab_main:
+        with _results_area:
             final_df = st.session_state["cleaned_df"]
-            is_large_dataset = len(final_df) > 100_000
+            _left = len(final_df)
+            metrics = st.session_state.get("metrics", {})
+            _start = metrics.get("start_count")
+            _ready = metrics.get("final_count", _left)
 
-            st.markdown(f"**⬇️ Full campaign file** — {len(final_df):,} leads")
-            st.caption("Everything in your Final Campaign file, in one download. This does not remove any leads.")
-            format_options = ["csv", "zip"] if is_large_dataset else ["xlsx", "csv", "zip"]
-            out_format = st.radio(
-                "File type",
-                format_options,
-                index=0,
-                horizontal=True,
-                help="XLSX opens in Excel. CSV works with most campaign tools. ZIP is a compressed CSV — "
-                     "much smaller, so it downloads faster.",
-                key="main_format",
-            )
-
-            dl_data, dl_name, dl_mime = make_download(final_df, out_format, "final_campaign_file")
-
-            st.download_button(
-                f"⬇️ Download campaign file ({out_format.upper()})",
-                data=dl_data,
-                file_name=dl_name,
-                mime=dl_mime,
-                type="primary",
-                key="dl_main_file_btn"
-            )
-            st.caption("✔ Checked: no duplicate or blank emails — ready to upload into your campaign tool.")
-
-        if tab_country is not None:
-            with tab_country:
-                st.caption(
-                    "Download one country's leads as a separate file. Countries are detected from the Location "
-                    "column: **Unknown** means the location was blank, **Other** means no country was recognised."
-                )
-                country_series = st.session_state.get("country_series", pd.Series())
-                country_counts = st.session_state.get("country_counts", {})
-                final_df = st.session_state["cleaned_df"]
-
-                if final_df.empty:
-                    theme.empty_state("🎉", "No leads left to split", "Every lead has already been downloaded or removed.")
-                elif country_series.empty or set(country_counts.keys()) == {"Unknown"}:
-                    theme.empty_state(
-                        "🌍", "No country information found",
-                        "Pick a Location column in step 3 and clean your leads again to split them by country.",
-                    )
-                else:
-                    counts_df = pd.DataFrame(
-                        [{"Country": k, "Leads": v} for k, v in sorted(country_counts.items(), key=lambda x: -x[1])]
-                    )
-                    st.dataframe(counts_df, width="stretch", hide_index=True)
-
-                    col_sel, col_dl = st.columns([2, 1])
-                    available_countries = [k for k, v in sorted(country_counts.items(), key=lambda x: -x[1]) if v > 0]
-                    with col_sel:
-                        selected_country = st.selectbox(
-                            "Choose a country", available_countries, key="selected_country_dl",
-                            help="Countries are listed from most to fewest leads.",
-                        )
-                    if selected_country:
-                        cnt = country_counts.get(selected_country, 0)
-                        with col_sel:
-                            st.markdown(
-                                f'<div class="lf-note">⚠️ Downloading removes these {cnt:,} leads from your '
-                                f'Final Campaign file, so they won\'t be included in later downloads.</div>',
-                                unsafe_allow_html=True,
-                            )
-                        with col_dl:
-                            country_df = final_df[country_series == selected_country]
-                            safe_name = selected_country.lower().replace('/', '_').replace(' ', '_')
-                            st.download_button(
-                                f"⬇️ Download {selected_country} ({cnt:,} leads)",
-                                data=csv_bytes(country_df),
-                                file_name=f"final_campaign_file_{safe_name}.csv",
-                                mime="text/csv",
-                                type="primary",
-                                key=f"dl_single_country_{safe_name}",
-                                on_click=remove_downloaded_leads,
-                                args=(country_df, (), selected_country),
-                            )
-
-        if tab_field is not None:
-            with tab_field:
-                final_df = st.session_state["cleaned_df"]
-                st.caption(
-                    "Split your leads by a field such as Job Title or Industry. Tick the groups you want — "
-                    "they're downloaded together as one file."
+            if _ready:
+                theme.status_line("success", f"{_ready:,} leads are clean and ready for your campaign")
+            else:
+                theme.status_line(
+                    "warning", "No leads are left after cleaning",
+                    "Every lead matched a removal rule. Check your options in step 2, then clean again.",
                 )
 
-                # Determine the best column to split by:
-                # Priority: mapped Industry column → any non-empty column in cleaned df
-                industry_col_in_df = "Industry" if (
-                    "Industry" in final_df.columns
-                    and not (final_df["Industry"].astype(str).str.strip() == "").all()
-                ) else None
-
-                # Collect all columns that have at least some non-blank values for user to pick from
-                # Exclude personal/identifier columns that don't make sense as split-by groups
-                _exclude_from_split = {"First Name", "Last Name", "Email"}
-                splittable_cols = [
-                    c for c in final_df.columns
-                    if c not in _exclude_from_split
-                    and not (final_df[c].astype(str).str.strip() == "").all()
+            # The statement: rows in, why each lead was removed (grouped by kind), rows out.
+            # Lists that weren't ticked say "Not checked" rather than 0. The rules run one
+            # after another, so the rows add up to "Total removed".
+            if _start is not None:
+                _removed = metrics.get("removed", {})
+                _groups = []
+                if "removed" in metrics:
+                    _groups.append(("Already on your saved lists", [
+                        ("Already in Master", "already in your Master database", _removed.get("master")),
+                        ("MQL", "already marked as marketing-qualified", _removed.get("mql")),
+                        ("Bounced", "bounced in a past campaign", _removed.get("bounce")),
+                        ("Unsubscribed", "asked not to be contacted", _removed.get("unsub")),
+                    ]))
+                _quality = [
+                    ("Garbled characters", "set aside — see the Removed leads tab", metrics.get("special_char_rows")),
+                    ("India-based contacts", "Indian location or .in email", metrics.get("indian_removed")),
+                    ("Duplicates", "same email more than once in your file", metrics.get("duplicates_removed")),
+                    ("No email address", "email cell was empty", _removed.get("blank_email")),
                 ]
+                if _removed.get("qc"):
+                    _quality.append(("Empty rows", "no data in any column", _removed["qc"]))
+                _groups.append(("Data quality", _quality))
+                theme.removal_breakdown(_groups, _start - _ready, start=_start, final=_ready)
+
+            if _left:
+                with st.expander(f"Preview clean leads — first 50 of {_left:,}", expanded=False):
+                    st.dataframe(final_df.head(50), width="stretch")
+                    st.caption(f"{_left:,} leads · {final_df.shape[1]} columns, in the order they'll appear in your download.")
+            with st.expander("Step-by-step report", expanded=False):
+                for line in st.session_state["report"]:
+                    st.write("- " + line)
+            if _left:
+                theme.status_line("next", "Next: download your campaign in step 4 below.")
+
+        with theme.card("download"):
+            section_header(
+                4, "Download your campaign",
+                "Download everything in one file, or split it by country or by another field.",
+            )
+            _dl_done = st.session_state.pop("_split_download_done", None)
+            _dl_banner = st.container()
+            if _dl_done:
+                _dl_label, _dl_removed, _dl_left = _dl_done
+                with _dl_banner:
+                    theme.status_line(
+                        "success", f"Downloaded {html.escape(str(_dl_label))}",
+                        f"{_dl_removed:,} leads were removed from your campaign file · {_dl_left:,} leads remain.",
+                    )
+
+            st.markdown('<div class="lf-group-label">Split options</div>', unsafe_allow_html=True)
+            _split_cols = st.columns(2)
+            split_by_location = _split_cols[0].checkbox(
+                "Split by country", value=True,
+                key="split_by_location",
+                help="Groups your leads by detected country so you can download each country separately.",
+            )
+            split_by_field = _split_cols[1].checkbox(
+                "Split by another field (Industry, Job Title…)", value=False,
+                key="split_by_field",
+                help="Groups your leads by any column you choose. Tick the groups you want and download them "
+                     "together in one file.",
+            )
+
+            tabs_to_show = ["Full campaign file"]
+            if split_by_location:
+                tabs_to_show.append("By country")
+            if split_by_field:
+                tabs_to_show.append("By field")
+            tabs_to_show.append("Removed leads")
+
+            all_tabs = st.tabs(tabs_to_show)
+            tab_idx = 0
+            tab_main = all_tabs[tab_idx]; tab_idx += 1
+            tab_country = all_tabs[tab_idx] if split_by_location else None; tab_idx += (1 if split_by_location else 0)
+            tab_field = all_tabs[tab_idx] if split_by_field else None; tab_idx += (1 if split_by_field else 0)
+            tab_audit = all_tabs[tab_idx]
+
+            with tab_main:
+                final_df = st.session_state["cleaned_df"]
+                is_large_dataset = len(final_df) > 100_000
 
                 if final_df.empty:
-                    theme.empty_state("🎉", "No leads left to split", "Every lead has already been downloaded or removed.")
-                elif not splittable_cols:
-                    theme.empty_state("🗂️", "Nothing to split by", "Your leads don't have any filled-in fields to group by.")
+                    theme.empty_state(
+                        "inbox", "No leads left in your campaign file",
+                        "Cleaning removed every lead, or you've already downloaded them all. "
+                        "Click <strong>Start over</strong> in step 1 to clean a new file.",
+                    )
                 else:
-                    # Default split column: Industry if available, else first splittable col
-                    default_split_col = industry_col_in_df or splittable_cols[0]
-                    default_idx = splittable_cols.index(default_split_col) if default_split_col in splittable_cols else 0
-
-                    split_col_choice = st.selectbox(
-                        "Split by",
-                        splittable_cols,
-                        index=default_idx,
-                        key="field_split_col_choice",
-                        help="The field used to group your leads — for example Job Title or Industry.",
+                    st.markdown(f"**All {len(final_df):,} leads in one file.** Downloading this doesn't remove any leads.")
+                    format_options = ["csv", "zip"] if is_large_dataset else ["xlsx", "csv", "zip"]
+                    out_format = st.radio(
+                        "File type",
+                        format_options,
+                        index=0,
+                        horizontal=True,
+                        format_func=str.upper,
+                        help="XLSX opens in Excel. CSV works with most campaign tools. ZIP is a compressed CSV — "
+                             "much smaller, so it downloads faster.",
+                        key="main_format",
                     )
 
-                    group_series = final_df[split_col_choice].astype(str).str.strip()
-                    group_series = group_series.replace("", "Unknown").replace("nan", "Unknown")
-                    group_counts = group_series.value_counts().to_dict()
-                    ordered_groups = [k for k, v in sorted(group_counts.items(), key=lambda x: -x[1]) if v > 0]
-                    safe_col = split_col_choice.lower().replace(" ", "_")
+                    dl_data, dl_name, dl_mime = make_download(final_df, out_format, "final_campaign_file")
 
-                    st.caption(
-                        f"**{len(ordered_groups):,}** different {split_col_choice} values found. "
-                        "Leads with this field left blank are grouped under **Unknown**."
+                    st.download_button(
+                        f"Download campaign file ({out_format.upper()})",
+                        icon=":material/download:",
+                        data=dl_data,
+                        file_name=dl_name,
+                        mime=dl_mime,
+                        type="primary",
+                        key="dl_main_file_btn"
                     )
+                    st.caption(f"{dl_name} · no duplicate or blank emails — ready for your campaign tool.")
 
-                    # Search box: type part of a value (e.g. "Software") to narrow the table.
-                    # Selections are remembered across searches so you can pick from several.
-                    # The remembered set (sel_key) is the single source of truth for what is
-                    # selected; the table and "Select all shown" only change it.
-                    sel_key = f"split_selected_{safe_col}"
-                    all_key = f"split_select_all_{safe_col}"
-                    ver_key = f"split_editor_ver_{safe_col}"
-
-                    def _on_group_search_change(all_key=all_key):
-                        # A new search shows different groups, so untick "Select all shown"
-                        # (it only ever applied to the groups shown when it was ticked).
-                        # Remembered selections are kept.
-                        st.session_state[all_key] = False
-
-                    search_col, all_col, clear_col = st.columns([3, 1, 1], vertical_alignment="bottom")
-                    group_search = search_col.text_input(
-                        f"🔎 Search {split_col_choice}",
-                        key=f"split_group_search_{safe_col}",
-                        placeholder="Type to find a value, e.g. Software, Healthcare, Finance, SaaS…",
-                        on_change=_on_group_search_change,
-                    ).strip().lower()
-                    visible_groups = (
-                        [g for g in ordered_groups if group_search in g.lower()] if group_search else ordered_groups
+                with theme.subcard("save"):
+                    # Saving lives with the full campaign file it saves.
+                    section_header(
+                        None, "Save to your Master database",
+                        "Optional. Saved leads are skipped automatically the next time you clean a file. "
+                        "Leads already in any Master list are never added twice.",
+                        "save",
                     )
-
-                    def _on_select_all_toggle(sel_key=sel_key, all_key=all_key, shown=tuple(visible_groups)):
-                        # The checkbox is authoritative when toggled: ticking selects every
-                        # shown group, unticking clears every shown group. Groups hidden by
-                        # the current search keep their state.
-                        current = set(st.session_state.get(sel_key, ()))
-                        if st.session_state.get(all_key):
-                            current |= set(shown)
-                        else:
-                            current -= set(shown)
-                        st.session_state[sel_key] = current
-
-                    select_all_groups = all_col.checkbox(
-                        "Select all shown",
-                        value=False,
-                        key=all_key,
-                        on_change=_on_select_all_toggle,
-                        help="Ticks every group in the list below (only those matching your search).",
-                    )
-
-                    def _on_clear_selection(sel_key=sel_key, all_key=all_key, ver_key=ver_key):
-                        st.session_state[sel_key] = set()
-                        st.session_state[all_key] = False
-                        # New editor key so the table doesn't re-apply its old ticks.
-                        st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
-
-                    clear_col.button(
-                        "Clear all",
-                        key=f"split_clear_{safe_col}",
-                        on_click=_on_clear_selection,
-                        disabled=not st.session_state.get(sel_key),
-                        help="Unticks every group, including ones hidden by your search.",
-                        width="stretch",
-                    )
-                    if group_search:
-                        st.caption(f"Showing {len(visible_groups):,} of {len(ordered_groups):,} groups matching “{group_search}”.")
-
-                    selected_set = set(st.session_state.get(sel_key, ()))
-                    groups_table = pd.DataFrame(
-                        [{"Select": k in selected_set, "Group": k, "Rows": group_counts[k]}
-                         for k in visible_groups]
-                    )
-                    if groups_table.empty:
-                        theme.empty_state("🔎", "No matching groups", f"Nothing matches “{html.escape(group_search)}”. Try a different search.")
-                        edited_groups = groups_table
+                    if final_df.empty:
+                        st.caption("Nothing to save — your campaign file is empty.")
+                    elif not db_is_ready():
+                        st.warning(
+                            "The lead database isn't connected, so leads can't be saved right now. "
+                            "See the message at the top of the page.",
+                            icon=":material/warning:",
+                        )
                     else:
-                        # Key includes the column, select-all state, search and clear count so the editor resets when any changes.
-                        edited_groups = st.data_editor(
-                            groups_table,
+                        final_df = st.session_state["cleaned_df"]
+                        try:
+                            existing_master = db.get_master_lists()
+                            existing_names = existing_master["name"].tolist() if not existing_master.empty else []
+                        except Exception as e:
+                            existing_master = pd.DataFrame()
+                            existing_names = []
+                            st.warning("Couldn't load your Master lists. You can still create a new one.")
+                            st.caption(f"Technical details: {type(e).__name__}: {e}")
+
+                        new_list_label = "+ Create a new list…"
+                        save_choice = st.selectbox(
+                            "Save into which Master list?",
+                            [new_list_label] + existing_names,
+                            key="save_master_choice",
+                            help="Pick an existing list to add to, or create a new one.",
+                        )
+                        if save_choice == new_list_label:
+                            target_name = st.text_input(
+                                "New Master list name",
+                                value=f"Cleaned {pd.Timestamp.now():%Y-%m-%d}",
+                                key="save_master_newname",
+                            )
+                        else:
+                            target_name = save_choice
+
+                        clean_target = (target_name or "").strip()
+
+                        # --- Global dedup preview -------------------------------------------
+                        # Before saving, compute how many emails are truly new vs already stored
+                        # in ANY master list (not just the target list).
+                        try:
+                            # Only recompute when the cleaned results change (new run) or after a save.
+                            # The lookup runs server-side so only matching emails are transferred.
+                            _dedup_key = st.session_state.get("run_token")
+                            _dedup_cache = st.session_state.get("_dedup_preview")
+                            if not _dedup_cache or _dedup_cache.get("key") != _dedup_key:
+                                emails_in_final = final_df["Email"].astype(str).str.lower().str.strip()
+                                _all_list_ids = set(int(i) for i in existing_master["id"].tolist()) if not existing_master.empty else set()
+                                _suppressed_ids = st.session_state.get("master_suppressed_list_ids")
+                                if _suppressed_ids is not None and _all_list_ids and _all_list_ids <= set(_suppressed_ids):
+                                    # Step 6 already removed every email present in any master list — nothing to look up.
+                                    new_mask = pd.Series(True, index=final_df.index)
+                                else:
+                                    with st.spinner("Checking for existing emails in all master lists…"):
+                                        existing_emails = db.find_existing_master_emails(emails_in_final.tolist())
+                                    new_mask = ~emails_in_final.isin(existing_emails)
+                                _dedup_cache = {"key": _dedup_key, "new_mask": new_mask}
+                                st.session_state["_dedup_preview"] = _dedup_cache
+                            new_mask = _dedup_cache["new_mask"]
+                            new_count = int(new_mask.sum())
+                            already_count = int(len(final_df) - new_count)
+
+                            _target_html = f"<b>{html.escape(clean_target)}</b>" if clean_target else "the list"
+                            if new_count == 0:
+                                theme.status_line(
+                                    "info", "Nothing new to save",
+                                    "All these leads are already in your Master lists.",
+                                )
+                            elif already_count > 0:
+                                theme.status_line(
+                                    "info", f"{new_count:,} new leads will be added to {_target_html}",
+                                    f"{already_count:,} are already in a Master list and will be skipped.",
+                                )
+                            else:
+                                theme.status_line(
+                                    "info", f"All {new_count:,} leads are new",
+                                    f"They'll be added to {_target_html}.",
+                                )
+                        except Exception as e:
+                            st.warning("Couldn't check which leads are already saved. Saving will still skip duplicates.")
+                            st.caption(f"Technical details: {type(e).__name__}: {e}")
+                            new_count = len(final_df)
+                            new_mask = pd.Series([True] * len(final_df), index=final_df.index)
+
+                        if st.button(
+                            f"Save {new_count:,} new leads to Master",
+                            icon=":material/save:",
+                            key="save_to_master_btn",
+                            disabled=(new_count == 0),
+                        ):
+                            if not clean_target:
+                                st.error("Enter a name for the new Master list, then click Save again.",
+                                         icon=":material/error:")
+                            else:
+                                try:
+                                    # Only pass the truly new contacts (global dedup applied)
+                                    new_df = final_df[new_mask].copy()
+                                    with st.spinner(f"Saving {new_count:,} new contacts to '{clean_target}'…"):
+                                        records = cleaned_df_to_records(new_df)
+                                        list_id = db.get_or_create_master_list(clean_target)
+                                        written = db.upsert_master_contacts(
+                                            list_id, records,
+                                            upload=dict(
+                                                file_name=f"{getattr(active_raw_file, 'name', 'Cleaned leads')} (cleaned in LeadFlow)",
+                                                file_size_bytes=get_upload_size(active_raw_file) if active_raw_file is not None else None,
+                                                rows_in_file=len(final_df), rows_skipped=len(final_df) - new_count,
+                                                list_name=clean_target, uploaded_by=(auth.current_user() or {}).get("email"),
+                                            ),
+                                        )
+                                    # Master data changed: refresh the dedup preview on the next rerun,
+                                    # and stop trusting the "already suppressed against all lists" shortcut.
+                                    st.session_state.pop("_dedup_preview", None)
+                                    st.session_state.pop("master_suppressed_list_ids", None)
+                                    st.success(
+                                        f"**Saved!** {written:,} new leads were added to Master list "
+                                        f"'{clean_target}'. They'll be skipped automatically in future runs.",
+                                        icon=":material/check_circle:",
+                                    )
+                                except Exception as e:
+                                    theme.friendly_error(
+                                        "Your leads couldn't be saved",
+                                        "Please try again. If it keeps happening, the lead database may be unavailable.",
+                                        e,
+                                    )
+
+            if tab_country is not None:
+                with tab_country:
+                    country_series = st.session_state.get("country_series", pd.Series())
+                    country_counts = st.session_state.get("country_counts", {})
+                    final_df = st.session_state["cleaned_df"]
+
+                    if final_df.empty:
+                        theme.empty_state("task_alt", "No leads left to split", "Every lead has already been downloaded or removed.")
+                    elif country_series.empty or set(country_counts.keys()) <= {LOCATION_EMPTY_LABEL, UNKNOWN_LOCATION_LABEL}:
+                        theme.empty_state(
+                            "public", "No country information found",
+                            "Pick a Location column in step 2 and clean your leads again to split them by country.",
+                        )
+                    else:
+                        available_countries = [k for k, v in sorted(country_counts.items(), key=lambda x: -x[1]) if v > 0]
+                        st.caption(f"Your leads are grouped into **{len(available_countries):,}** countries. "
+                                   "Tick one or more countries below to download them together.")
+
+                        country_sel_key = "split_selected_countries"
+                        country_ver_key = "split_country_editor_ver"
+                        selected_countries = set(st.session_state.get(country_sel_key, ())) & set(available_countries)
+                        countries_table = pd.DataFrame(
+                            [{"Select": country in selected_countries,
+                              "Country": country,
+                              "Leads": country_counts[country]}
+                             for country in available_countries]
+                        )
+                        edited_countries = st.data_editor(
+                            countries_table,
                             column_config={
                                 "Select": st.column_config.CheckboxColumn("Select", default=False),
-                                "Group": st.column_config.TextColumn(split_col_choice),
-                                "Rows": st.column_config.NumberColumn("Leads", format="%d"),
+                                "Country": st.column_config.TextColumn("Country"),
+                                "Leads": st.column_config.NumberColumn("Leads", format="%d"),
                             },
-                            disabled=["Group", "Rows"],
+                            disabled=["Country", "Leads"],
                             hide_index=True,
                             width="stretch",
-                            key=(f"split_group_editor_{safe_col}_{st.session_state.get(ver_key, 0)}_"
-                                 f"{int(select_all_groups)}_{hash(group_search) & 0xFFFFFFFF}"),
+                            key=f"split_country_editor_{st.session_state.get(country_ver_key, 0)}",
                         )
-
-                    if not edited_groups.empty:
                         visible_selected = set(
-                            edited_groups.loc[edited_groups["Select"].fillna(False).astype(bool), "Group"].tolist()
+                            edited_countries.loc[
+                                edited_countries["Select"].fillna(False).astype(bool), "Country"
+                            ].tolist()
                         )
-                    else:
-                        visible_selected = set()
-                    selected_set = (selected_set - set(visible_groups)) | visible_selected
-                    st.session_state[sel_key] = selected_set
-                    selected_groups = [g for g in ordered_groups if g in selected_set]
+                        selected_countries = visible_selected
+                        st.session_state[country_sel_key] = selected_countries
 
-                    if not selected_groups:
-                        st.info("Tick one or more groups above to build your download.", icon="👆")
-                    else:
-                        combined_mask = group_series.isin(selected_groups)
-                        combined_rows = int(combined_mask.sum())
-                        group_order = {g: i for i, g in enumerate(ordered_groups)}
+                        if selected_countries:
+                            selected_countries = [
+                                country for country in available_countries if country in selected_countries
+                            ]
+                            combined_mask = country_series.isin(selected_countries)
+                            combined_df = final_df[combined_mask]
+                            combined_rows = int(combined_mask.sum())
+                            country_order = {country: i for i, country in enumerate(available_countries)}
 
-                        combined_df = final_df[combined_mask]
+                            def _build_country_combined(
+                                df=combined_df,
+                                order=country_order,
+                                countries=country_series[combined_mask],
+                            ):
+                                df = df.assign(__country_order=countries.map(order))
+                                df = df.sort_values("__country_order", kind="stable").drop(
+                                    columns="__country_order"
+                                )
+                                return df.to_csv(index=False).encode("utf-8")
 
-                        def _build_combined(df=combined_df, order=group_order, gs=group_series[combined_mask]):
-                            # Keep rows of the same group together, in the order the groups are listed.
-                            # Runs only when the download button is clicked.
-                            df = df.assign(__grp_order=gs.map(order))
-                            df = df.sort_values("__grp_order", kind="stable").drop(columns="__grp_order")
-                            return df.to_csv(index=False).encode("utf-8")
-
-                        sel_col1, sel_col2 = st.columns([2, 1])
-                        with sel_col1:
-                            st.write(
-                                f"**{len(selected_groups):,} of {len(ordered_groups):,} groups selected** · "
-                                f"**{combined_rows:,} leads** "
-                                f"({', '.join(selected_groups[:5])}{'…' if len(selected_groups) > 5 else ''})"
+                            col_status, col_dl = st.columns([2, 1])
+                            with col_status:
+                                _shown_countries = ", ".join(
+                                    html.escape(country) for country in selected_countries[:5]
+                                )
+                                theme.status_line(
+                                    "success",
+                                    f"Ready: {html.escape(group_download_name('Country', selected_countries))}",
+                                    f"{len(selected_countries):,} of {len(available_countries):,} countries · "
+                                    f"{combined_rows:,} leads ({_shown_countries}"
+                                    f"{'…' if len(selected_countries) > 5 else ''})",
+                                )
+                                theme.note(
+                                    f"Downloading removes these {combined_rows:,} leads from your campaign "
+                                    "file, so they won't be included in later downloads."
+                                )
+                            with col_dl:
+                                country_label = (
+                                    selected_countries[0]
+                                    if len(selected_countries) == 1
+                                    else f"{len(selected_countries):,} countries"
+                                )
+                                st.download_button(
+                                    f"Download selected ({combined_rows:,} leads)",
+                                    icon=":material/download:",
+                                    data=_build_country_combined,
+                                    file_name=group_download_name("Country", selected_countries),
+                                    mime="text/csv",
+                                    type="primary",
+                                    key="dl_combined_country",
+                                    on_click=remove_downloaded_leads,
+                                    args=(combined_df, (country_sel_key,), country_label),
+                                    width="stretch",
+                                )
+                        else:
+                            theme.status_line(
+                                "next",
+                                "Tick the countries you want in the table above",
+                                "Your combined download will appear here.",
                             )
-                            st.markdown(
-                                f'<div class="lf-note">⚠️ Downloading removes these {combined_rows:,} leads from your '
-                                f'Final Campaign file, so they won\'t be included in later downloads.</div>',
-                                unsafe_allow_html=True,
-                            )
-                        with sel_col2:
-                            _grp_label = (selected_groups[0] if len(selected_groups) == 1
-                                          else f"{len(selected_groups):,} {split_col_choice} groups")
-                            st.download_button(
-                                f"⬇️ Download selected ({combined_rows:,} leads)",
-                                data=_build_combined,
-                                file_name=f"split_{safe_col}_selected_groups.csv",
-                                mime="text/csv",
-                                type="primary",
-                                key=f"dl_combined_split_{safe_col}",
-                                on_click=remove_downloaded_leads,
-                                args=(combined_df, (all_key,), _grp_label),
-                            )
 
-        with tab_audit:
-            st.caption(
-                "Leads LeadFlow removed or set aside while cleaning — download them if you want to double-check. "
-                "None of these are in your campaign file."
-            )
+                        _legend = [(LOCATION_EMPTY_LABEL, "no location given"),
+                                   (UNKNOWN_LOCATION_LABEL, "location couldn't be matched to a country")]
+                        _legend = [f"<span><b>{k}</b> — {v}</span>" for k, v in _legend if k in country_counts]
+                        if _legend:
+                            st.markdown(f'<div class="lf-legend">{"".join(_legend)}</div>', unsafe_allow_html=True)
 
-            removed_indian_df = st.session_state.get("removed_indian_df", pd.DataFrame())
-            st.write(f"**India-based contacts removed:** {len(removed_indian_df):,}")
-            if len(removed_indian_df) > 0:
-                st.dataframe(removed_indian_df.head(20), width="stretch")
-                st.download_button(
-                    "⬇️ Download removed Indian contacts (full list)",
-                    data=csv_bytes(removed_indian_df),
-                    file_name="removed_indian_contacts.csv",
-                    mime="text/csv",
-                    key="dl_indian_audit",
-                    type="primary",
-                )
-                st.caption("The 'Matched On' and 'Matched Value' columns show why each contact was removed.")
-
-            st.divider()
-
-            special_chars_df = st.session_state.get("special_chars_removed_df", pd.DataFrame())
-            st.write(f"**Rows set aside because of odd or garbled characters:** {len(special_chars_df):,}")
-            if len(special_chars_df) > 0:
-                st.dataframe(special_chars_df.head(20), width="stretch")
-                st.download_button(
-                    "⬇️ Download uncleaned special-characters file (full list)",
-                    data=csv_bytes(special_chars_df),
-                    file_name="special_characters_separated_uncleaned.csv",
-                    mime="text/csv",
-                    key="dl_specialchars_audit",
-                    type="primary",
-                )
-                st.caption("This file contains the rows exactly as they were in your upload, odd characters included.")
-
-                # Build cleaned version: strip special chars from all non-email columns
-                _audit_cleanable_cols = [c for c in FINAL_COLUMNS if c != "Email" and c in special_chars_df.columns]
-                special_chars_cleaned_df = special_chars_df.drop(
-                    columns=[c for c in ["Matched Fields"] if c in special_chars_df.columns],
-                    errors="ignore",
-                ).copy()
-                for _col in _audit_cleanable_cols:
-                    special_chars_cleaned_df[_col] = (
-                        special_chars_cleaned_df[_col]
-                        .astype(str)
-                        .str.replace(SPECIAL_CHARS_COUNT_PATTERN, "", regex=True)
-                        .str.replace(r"\s+", " ", regex=True)
-                        .str.strip()
+            if tab_field is not None:
+                with tab_field:
+                    final_df = st.session_state["cleaned_df"]
+                    st.caption(
+                        "Group your leads by a field such as Industry or Job Title, tick the groups you want, "
+                        "then download them together as one file."
                     )
 
-                st.markdown("**Cleaned preview** — same rows after removing special characters from non-email fields:")
-                st.dataframe(special_chars_cleaned_df.head(20), width="stretch")
-                st.download_button(
-                    "⬇️ Download cleaned special-characters file (full list)",
-                    data=csv_bytes(special_chars_cleaned_df),
-                    file_name="special_characters_separated_cleaned.csv",
-                    mime="text/csv",
-                    key="dl_specialchars_cleaned_audit",
-                    type="primary",
-                )
-                st.caption("Email column is preserved as-is. Only non-email fields have had special characters stripped.")
+                    # Scanning every column is slow on big files, so it's redone only when the
+                    # Final Campaign itself changes (new cleaning run or a split download).
+                    _cols_cache = st.session_state.get("_split_cols_cache")
+                    if not _cols_cache or _cols_cache["src"] is not final_df:
+                        # Determine the best column to split by:
+                        # Priority: mapped Industry column → any non-empty column in cleaned df
+                        industry_col_in_df = "Industry" if (
+                            "Industry" in final_df.columns
+                            and not (final_df["Industry"].astype(str).str.strip() == "").all()
+                        ) else None
 
-            st.divider()
+                        # Collect all columns that have at least some non-blank values for user to pick from
+                        # Exclude personal/identifier columns that don't make sense as split-by groups
+                        _exclude_from_split = {"First Name", "Last Name", "Email"}
+                        splittable_cols = [
+                            c for c in final_df.columns
+                            if c not in _exclude_from_split
+                            and not (final_df[c].astype(str).str.strip() == "").all()
+                        ]
+                        _cols_cache = {"src": final_df, "industry": industry_col_in_df, "cols": splittable_cols}
+                        st.session_state["_split_cols_cache"] = _cols_cache
+                    industry_col_in_df = _cols_cache["industry"]
+                    splittable_cols = list(_cols_cache["cols"])
 
-            email_special_df = st.session_state.get("special_chars_email_df", pd.DataFrame())
-            st.write(f"**Rows where Email specifically contains special characters (uncleaned):** {len(email_special_df):,} rows")
-            if len(email_special_df) > 0:
-                st.dataframe(email_special_df.head(20), width="stretch")
-                st.download_button(
-                    "⬇️ Download email-special-characters file (full list)",
-                    data=csv_bytes(email_special_df),
-                    file_name="email_special_characters_separated.csv",
-                    mime="text/csv",
-                    key="dl_email_specialchars_audit",
-                    type="primary",
-                )
-
-        section_header(
-            "07-Save", "Save to your lead database",
-            "Optional. Add these clean leads to a Master list so they're automatically skipped next time. "
-            "Leads already saved in any Master list are never added twice.",
-        )
-        if not db_is_ready():
-            st.warning(
-                "The lead database isn't connected, so leads can't be saved right now. "
-                "See the message at the top of the page."
-            )
-        else:
-            final_df = st.session_state["cleaned_df"]
-            try:
-                existing_master = db.get_master_lists()
-                existing_names = existing_master["name"].tolist() if not existing_master.empty else []
-            except Exception as e:
-                existing_master = pd.DataFrame()
-                existing_names = []
-                st.warning("Couldn't load your Master lists. You can still create a new one.")
-                st.caption(f"Technical details: {type(e).__name__}: {e}")
-
-            new_list_label = "➕ Create a new list…"
-            save_choice = st.selectbox(
-                "Save into which Master list?",
-                [new_list_label] + existing_names,
-                key="save_master_choice",
-                help="Pick an existing list to add to, or create a new one.",
-            )
-            if save_choice == new_list_label:
-                target_name = st.text_input(
-                    "New Master list name",
-                    value=f"Cleaned {pd.Timestamp.now():%Y-%m-%d}",
-                    key="save_master_newname",
-                )
-            else:
-                target_name = save_choice
-
-            clean_target = (target_name or "").strip()
-
-            # --- Global dedup preview -------------------------------------------
-            # Before saving, compute how many emails are truly new vs already stored
-            # in ANY master list (not just the target list).
-            try:
-                # Only recompute when the cleaned results change (new run) or after a save.
-                # The lookup runs server-side so only matching emails are transferred.
-                _dedup_key = st.session_state.get("run_token")
-                _dedup_cache = st.session_state.get("_dedup_preview")
-                if not _dedup_cache or _dedup_cache.get("key") != _dedup_key:
-                    emails_in_final = final_df["Email"].astype(str).str.lower().str.strip()
-                    _all_list_ids = set(int(i) for i in existing_master["id"].tolist()) if not existing_master.empty else set()
-                    _suppressed_ids = st.session_state.get("master_suppressed_list_ids")
-                    if _suppressed_ids is not None and _all_list_ids and _all_list_ids <= set(_suppressed_ids):
-                        # Step 6 already removed every email present in any master list — nothing to look up.
-                        new_mask = pd.Series(True, index=final_df.index)
+                    if final_df.empty:
+                        theme.empty_state("task_alt", "No leads left to split", "Every lead has already been downloaded or removed.")
+                    elif not splittable_cols:
+                        theme.empty_state("category", "Nothing to split by", "Your leads don't have any filled-in fields to group by.")
                     else:
-                        with st.spinner("Checking for existing emails in all master lists…"):
-                            existing_emails = db.find_existing_master_emails(emails_in_final.tolist())
-                        new_mask = ~emails_in_final.isin(existing_emails)
-                    _dedup_cache = {"key": _dedup_key, "new_mask": new_mask}
-                    st.session_state["_dedup_preview"] = _dedup_cache
-                new_mask = _dedup_cache["new_mask"]
-                new_count = int(new_mask.sum())
-                already_count = int(len(final_df) - new_count)
+                        # Default split column: Industry if available, else first splittable col
+                        default_split_col = industry_col_in_df or splittable_cols[0]
+                        default_idx = splittable_cols.index(default_split_col) if default_split_col in splittable_cols else 0
 
-                dedup_col1, dedup_col2 = st.columns(2)
-                dedup_col1.metric(
-                    "✅ New leads to save",
-                    f"{new_count:,}",
-                    help="These emails are not yet in any master list and will be added.",
-                )
-                dedup_col2.metric(
-                    "⏭️ Already saved (will be skipped)",
-                    f"{already_count:,}",
-                    help="These emails already exist in at least one master list and will be skipped.",
-                )
-
-                if new_count == 0:
-                    st.info(
-                        "ℹ️ All cleaned contacts already exist in your master lists. "
-                        "Nothing new will be saved."
-                    )
-                elif already_count > 0:
-                    st.markdown(
-                        f'<div class="lf-dedup-box warn">'
-                        f'⚠️ <strong>{already_count:,}</strong> email(s) already stored across all master lists '
-                        f'— only the <strong>{new_count:,}</strong> new contacts will be added to '
-                        f'<strong>{clean_target or "—"}</strong>.'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        f'<div class="lf-dedup-box">'
-                        f'✅ All <strong>{new_count:,}</strong> contacts are new — '
-                        f'none of them exist in any master list yet.'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-            except Exception as e:
-                st.warning("Couldn't check which leads are already saved. Saving will still skip duplicates.")
-                st.caption(f"Technical details: {type(e).__name__}: {e}")
-                new_count = len(final_df)
-                new_mask = pd.Series([True] * len(final_df), index=final_df.index)
-
-            if st.button(
-                f"💾 Save {new_count:,} new leads to Master",
-                type="primary",
-                key="save_to_master_btn",
-                disabled=(new_count == 0),
-            ):
-                if not clean_target:
-                    st.error("Please enter a name for the new Master list.")
-                else:
-                    try:
-                        # Only pass the truly new contacts (global dedup applied)
-                        new_df = final_df[new_mask].copy()
-                        with st.spinner(f"Saving {new_count:,} new contacts to '{clean_target}'…"):
-                            records = cleaned_df_to_records(new_df)
-                            list_id = db.get_or_create_master_list(clean_target)
-                            written = db.upsert_master_contacts(list_id, records)
-                        # Master data changed: refresh the dedup preview on the next rerun,
-                        # and stop trusting the "already suppressed against all lists" shortcut.
-                        st.session_state.pop("_dedup_preview", None)
-                        st.session_state.pop("master_suppressed_list_ids", None)
-                        st.success(
-                            f"**Saved!** {written:,} new leads were added to Master list "
-                            f"'{clean_target}'. They'll be skipped automatically in future runs.",
-                            icon="✅",
+                        split_col_choice = st.selectbox(
+                            "Split leads by",
+                            splittable_cols,
+                            index=default_idx,
+                            key="field_split_col_choice",
+                            help="The field used to group your leads — for example Job Title or Industry.",
                         )
-                        st.balloons()
-                    except Exception as e:
-                        theme.friendly_error(
-                            "Your leads couldn't be saved",
-                            "Please try again. If it keeps happening, the lead database may be unavailable.",
-                            e,
+
+                        group_series = final_df[split_col_choice].astype(str).str.strip()
+                        group_series = group_series.replace("", "Unknown").replace("nan", "Unknown")
+                        group_counts = group_series.value_counts().to_dict()
+                        ordered_groups = [k for k, v in sorted(group_counts.items(), key=lambda x: -x[1]) if v > 0]
+                        safe_col = split_col_choice.lower().replace(" ", "_")
+
+                        st.caption(
+                            f"**{len(ordered_groups):,}** different {split_col_choice} values found. "
+                            "Leads with this field left blank are grouped under **Unknown**."
                         )
-else:
-    theme.empty_state(
-        "📂", "No leads uploaded yet",
-        "Upload a CSV or Excel file above, then click <strong>Use this file</strong> to get started.",
-    )
+
+                        # Keyword chips (e.g. "CTO", "Chief") narrow the table to groups containing
+                        # a keyword as a whole word — "CTO" never matches "Inspectors".
+                        # Selections are remembered across searches so you can pick from several.
+                        # The remembered set (sel_key) is the single source of truth for what is
+                        # selected; the table and "Select all shown" only change it.
+                        sel_key = f"split_selected_{safe_col}"
+                        all_key = f"split_select_all_{safe_col}"
+                        ver_key = f"split_editor_ver_{safe_col}"
+
+                        def _on_group_search_change(all_key=all_key):
+                            # A new search shows different groups, so untick "Select all shown"
+                            # (it only ever applied to the groups shown when it was ticked).
+                            # Remembered selections are kept.
+                            st.session_state[all_key] = False
+
+                        search_col, all_col, clear_col = st.columns([3, 1, 1], vertical_alignment="bottom")
+                        search_terms = keyword_terms(search_col.multiselect(
+                            f"Search {split_col_choice} groups by keyword",
+                            options=[],
+                            accept_new_options=True,
+                            key=f"split_group_keywords_{safe_col}",
+                            placeholder="Type a keyword and press Enter, e.g. CTO",
+                            on_change=_on_group_search_change,
+                        ))
+                        group_search = ", ".join(search_terms)
+                        # A group is shown if it contains any keyword as a whole word/phrase.
+                        if search_terms:
+                            _kw = keyword_matcher(search_terms)
+                            visible_groups = [g for g in ordered_groups if _kw.search(g)]
+                        else:
+                            visible_groups = ordered_groups
+
+                        def _on_select_all_toggle(sel_key=sel_key, all_key=all_key, shown=tuple(visible_groups)):
+                            # The checkbox is authoritative when toggled: ticking selects every
+                            # shown group, unticking clears every shown group. Groups hidden by
+                            # the current search keep their state.
+                            current = set(st.session_state.get(sel_key, ()))
+                            if st.session_state.get(all_key):
+                                current |= set(shown)
+                            else:
+                                current -= set(shown)
+                            st.session_state[sel_key] = current
+
+                        select_all_groups = all_col.checkbox(
+                            "Select all shown",
+                            value=False,
+                            key=all_key,
+                            on_change=_on_select_all_toggle,
+                            help="Ticks every group in the list below (only those matching your search).",
+                        )
+
+                        def _on_clear_selection(sel_key=sel_key, all_key=all_key, ver_key=ver_key):
+                            st.session_state[sel_key] = set()
+                            st.session_state[all_key] = False
+                            # New editor key so the table doesn't re-apply its old ticks.
+                            st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+
+                        clear_col.button(
+                            "Clear selection",
+                            key=f"reset_split_{safe_col}",
+                            on_click=_on_clear_selection,
+                            disabled=not st.session_state.get(sel_key),
+                            help="Unticks every group, including ones hidden by your search.",
+                            width="stretch",
+                        )
+                        if group_search:
+                            st.caption(f"Showing {len(visible_groups):,} of {len(ordered_groups):,} groups matching “{group_search}”.")
+                        else:
+                            st.caption("Add several keywords to find more than one group. Keywords match whole "
+                                       "words only — “CTO” finds “Co-founder & CTO”, not “Inspectors”.")
+
+                        selected_set = set(st.session_state.get(sel_key, ()))
+                        groups_table = pd.DataFrame(
+                            [{"Select": k in selected_set, "Group": k, "Rows": group_counts[k]}
+                             for k in visible_groups]
+                        )
+                        if groups_table.empty:
+                            theme.empty_state("search_off", "No matching groups", f"Nothing matches “{html.escape(group_search)}”. Try a different search.")
+                            edited_groups = groups_table
+                        else:
+                            # Key includes the column, select-all state, search and clear count so the editor resets when any changes.
+                            edited_groups = st.data_editor(
+                                groups_table,
+                                column_config={
+                                    "Select": st.column_config.CheckboxColumn("Select", default=False),
+                                    "Group": st.column_config.TextColumn(split_col_choice),
+                                    "Rows": st.column_config.NumberColumn("Leads", format="%d"),
+                                },
+                                disabled=["Group", "Rows"],
+                                hide_index=True,
+                                width="stretch",
+                                key=(f"split_group_editor_{safe_col}_{st.session_state.get(ver_key, 0)}_"
+                                     f"{int(select_all_groups)}_{hash(group_search.lower()) & 0xFFFFFFFF}"),
+                            )
+
+                        if not edited_groups.empty:
+                            visible_selected = set(
+                                edited_groups.loc[edited_groups["Select"].fillna(False).astype(bool), "Group"].tolist()
+                            )
+                        else:
+                            visible_selected = set()
+                        selected_set = (selected_set - set(visible_groups)) | visible_selected
+                        st.session_state[sel_key] = selected_set
+                        selected_groups = [g for g in ordered_groups if g in selected_set]
+
+                        if not selected_groups:
+                            theme.status_line("next", "Tick the groups you want in the table above",
+                                              "Your download will appear here.")
+                        else:
+                            combined_mask = group_series.isin(selected_groups)
+                            combined_rows = int(combined_mask.sum())
+                            group_order = {g: i for i, g in enumerate(ordered_groups)}
+
+                            combined_df = final_df[combined_mask]
+
+                            def _build_combined(df=combined_df, order=group_order, gs=group_series[combined_mask]):
+                                # Keep rows of the same group together, in the order the groups are listed.
+                                # Runs only when the download button is clicked.
+                                df = df.assign(__grp_order=gs.map(order))
+                                df = df.sort_values("__grp_order", kind="stable").drop(columns="__grp_order")
+                                return df.to_csv(index=False).encode("utf-8")
+
+                            sel_col1, sel_col2 = st.columns([2, 1])
+                            with sel_col1:
+                                _shown = ", ".join(html.escape(g) for g in selected_groups[:5])
+                                theme.status_line(
+                                    "success",
+                                    f"Ready: {html.escape(group_download_name(split_col_choice, selected_groups))}",
+                                    f"{len(selected_groups):,} of {len(ordered_groups):,} groups · {combined_rows:,} leads "
+                                    f"({_shown}{'…' if len(selected_groups) > 5 else ''})",
+                                )
+                                theme.note(f"Downloading removes these {combined_rows:,} leads from your campaign "
+                                           "file, so they won't be included in later downloads.")
+                            with sel_col2:
+                                _grp_label = (selected_groups[0] if len(selected_groups) == 1
+                                              else f"{len(selected_groups):,} {split_col_choice} groups")
+                                st.download_button(
+                                    f"Download selected ({combined_rows:,} leads)",
+                                    icon=":material/download:",
+                                    data=_build_combined,
+                                    file_name=group_download_name(split_col_choice, selected_groups),
+                                    mime="text/csv",
+                                    type="primary",
+                                    key=f"dl_combined_split_{safe_col}",
+                                    on_click=remove_downloaded_leads,
+                                    args=(combined_df, (all_key,), _grp_label),
+                                    width="stretch",
+                                )
+
+                            if len(selected_groups) > 1:
+                                # Same download, one group at a time, named after the group.
+                                one_col_sel, one_col_dl = st.columns([2, 1], vertical_alignment="bottom")
+                                one_group = one_col_sel.selectbox(
+                                    "Or download one selected group on its own",
+                                    selected_groups,
+                                    key=f"split_one_group_{safe_col}",
+                                    format_func=lambda g: f"{g} ({group_counts[g]:,} leads)",
+                                )
+                                one_df = final_df[group_series == one_group]
+                                one_col_dl.download_button(
+                                    f"Download {one_group} ({len(one_df):,} leads)",
+                                    icon=":material/download:",
+                                    data=csv_bytes(one_df),
+                                    file_name=group_download_name(split_col_choice, [one_group]),
+                                    mime="text/csv",
+                                    key=f"dl_one_split_{safe_col}",
+                                    on_click=remove_downloaded_leads,
+                                    args=(one_df, (), one_group),
+                                    width="stretch",
+                                )
+
+            with tab_audit:
+                st.caption(
+                    "Leads removed or set aside while cleaning, if you want to double-check them. "
+                    "None of these are in your campaign file."
+                )
+
+                removed_indian_df = st.session_state.get("removed_indian_df", pd.DataFrame())
+                st.markdown(f"**India-based contacts removed — {len(removed_indian_df):,}**")
+                if len(removed_indian_df) > 0:
+                    st.dataframe(removed_indian_df.head(20), width="stretch")
+                    st.download_button(
+                        "Download removed India-based contacts (full list)",
+                        icon=":material/download:",
+                        data=csv_bytes(removed_indian_df),
+                        file_name="removed_indian_contacts.csv",
+                        mime="text/csv",
+                        key="dl_indian_audit",
+                    )
+                    st.caption("The 'Matched On' and 'Matched Value' columns show why each contact was removed.")
+
+                st.divider()
+
+                special_chars_df = st.session_state.get("special_chars_removed_df", pd.DataFrame())
+                st.markdown(f"**Rows set aside because of garbled characters — {len(special_chars_df):,}**")
+                if len(special_chars_df) > 0:
+                    st.dataframe(special_chars_df.head(20), width="stretch")
+                    st.download_button(
+                        "Download uncleaned special-characters file (full list)",
+                        icon=":material/download:",
+                        data=csv_bytes(special_chars_df),
+                        file_name="special_characters_separated_uncleaned.csv",
+                        mime="text/csv",
+                        key="dl_specialchars_audit",
+                    )
+                    st.caption("This file contains the rows exactly as they were in your upload, odd characters included.")
+
+                    # Build cleaned version: strip special chars from all non-email columns.
+                    # Cached against the audit frame, which only changes on a new cleaning run.
+                    _audit_cache = st.session_state.get("_special_chars_cleaned_cache")
+                    if not _audit_cache or _audit_cache["src"] is not special_chars_df:
+                        _audit_cleanable_cols = [c for c in FINAL_COLUMNS if c != "Email" and c in special_chars_df.columns]
+                        special_chars_cleaned_df = special_chars_df.drop(
+                            columns=[c for c in ["Matched Fields"] if c in special_chars_df.columns],
+                            errors="ignore",
+                        ).copy()
+                        for _col in _audit_cleanable_cols:
+                            special_chars_cleaned_df[_col] = (
+                                special_chars_cleaned_df[_col]
+                                .astype(str)
+                                .str.replace(SPECIAL_CHARS_COUNT_PATTERN, "", regex=True)
+                                .str.replace(r"\s+", " ", regex=True)
+                                .str.strip()
+                            )
+                        _audit_cache = {"src": special_chars_df, "out": special_chars_cleaned_df}
+                        st.session_state["_special_chars_cleaned_cache"] = _audit_cache
+                    special_chars_cleaned_df = _audit_cache["out"]
+
+                    st.markdown("**Cleaned preview** — same rows after removing special characters from non-email fields:")
+                    st.dataframe(special_chars_cleaned_df.head(20), width="stretch")
+                    st.download_button(
+                        "Download cleaned special-characters file (full list)",
+                        icon=":material/download:",
+                        data=csv_bytes(special_chars_cleaned_df),
+                        file_name="special_characters_separated_cleaned.csv",
+                        mime="text/csv",
+                        key="dl_specialchars_cleaned_audit",
+                    )
+                    st.caption("Email column is preserved as-is. Only non-email fields have had special characters stripped.")
+
+                st.divider()
+
+                email_special_df = st.session_state.get("special_chars_email_df", pd.DataFrame())
+                st.markdown(f"**Of those, rows whose Email has special characters — {len(email_special_df):,}**")
+                if len(email_special_df) > 0:
+                    st.dataframe(email_special_df.head(20), width="stretch")
+                    st.download_button(
+                        "Download email-special-characters file (full list)",
+                        icon=":material/download:",
+                        data=csv_bytes(email_special_df),
+                        file_name="email_special_characters_separated.csv",
+                        mime="text/csv",
+                        key="dl_email_specialchars_audit",
+                    )
 
 theme.workflow_steps(_workflow_step(), _stepper)

@@ -1,0 +1,716 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-30T10:30:22Z",
+  "title": "Design System: LeadFlow",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Statement Navy",
+        "canonical": "#12305a",
+        "oklch": "oklch(31.2% 0.083 257)",
+        "tonalRamp": [
+          "oklch(15% 0.042 257)",
+          "oklch(26% 0.053 257)",
+          "oklch(38% 0.066 257)",
+          "oklch(50% 0.078 257)",
+          "oklch(62% 0.076 257)",
+          "oklch(74% 0.064 257)",
+          "oklch(85% 0.052 257)",
+          "oklch(95% 0.042 257)"
+        ]
+      },
+      "primary-hover": {
+        "role": "primary",
+        "displayName": "Ink Navy",
+        "canonical": "#0c1b33",
+        "oklch": "oklch(22.3% 0.051 259)",
+        "tonalRamp": [
+          "oklch(15% 0.026 259)",
+          "oklch(26% 0.033 259)",
+          "oklch(38% 0.040 259)",
+          "oklch(50% 0.048 259)",
+          "oklch(62% 0.047 259)",
+          "oklch(74% 0.039 259)",
+          "oklch(85% 0.032 259)",
+          "oklch(95% 0.026 259)"
+        ]
+      },
+      "primary-soft": {
+        "role": "primary",
+        "displayName": "Navy Wash",
+        "canonical": "#e9eef5",
+        "oklch": "oklch(94.7% 0.011 257)",
+        "tonalRamp": [
+          "oklch(15% 0.005 257)",
+          "oklch(26% 0.007 257)",
+          "oklch(38% 0.009 257)",
+          "oklch(50% 0.010 257)",
+          "oklch(62% 0.010 257)",
+          "oklch(74% 0.008 257)",
+          "oklch(85% 0.007 257)",
+          "oklch(95% 0.005 257)"
+        ]
+      },
+      "link": {
+        "role": "primary",
+        "displayName": "Link Navy",
+        "canonical": "#1d4e89",
+        "oklch": "oklch(42.3% 0.111 255)",
+        "tonalRamp": [
+          "oklch(15% 0.056 255)",
+          "oklch(26% 0.071 255)",
+          "oklch(38% 0.088 255)",
+          "oklch(50% 0.104 255)",
+          "oklch(62% 0.102 255)",
+          "oklch(74% 0.085 255)",
+          "oklch(85% 0.070 255)",
+          "oklch(95% 0.056 255)"
+        ]
+      },
+      "title": {
+        "role": "neutral",
+        "displayName": "Ink Navy (text)",
+        "canonical": "#0c1b33",
+        "oklch": "oklch(22.3% 0.051 259)",
+        "tonalRamp": [
+          "oklch(15% 0.026 259)",
+          "oklch(26% 0.033 259)",
+          "oklch(38% 0.040 259)",
+          "oklch(50% 0.048 259)",
+          "oklch(62% 0.047 259)",
+          "oklch(74% 0.039 259)",
+          "oklch(85% 0.032 259)",
+          "oklch(95% 0.026 259)"
+        ]
+      },
+      "body": {
+        "role": "neutral",
+        "displayName": "Body Ink",
+        "canonical": "#36435a",
+        "oklch": "oklch(38.1% 0.043 262)",
+        "tonalRamp": [
+          "oklch(15% 0.022 262)",
+          "oklch(26% 0.027 262)",
+          "oklch(38% 0.034 262)",
+          "oklch(50% 0.040 262)",
+          "oklch(62% 0.039 262)",
+          "oklch(74% 0.033 262)",
+          "oklch(85% 0.027 262)",
+          "oklch(95% 0.022 262)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "#5a6679",
+        "oklch": "oklch(50.7% 0.034 260)",
+        "tonalRamp": [
+          "oklch(15% 0.017 260)",
+          "oklch(26% 0.021 260)",
+          "oklch(38% 0.027 260)",
+          "oklch(50% 0.032 260)",
+          "oklch(62% 0.031 260)",
+          "oklch(74% 0.026 260)",
+          "oklch(85% 0.021 260)",
+          "oklch(95% 0.017 260)"
+        ]
+      },
+      "placeholder": {
+        "role": "neutral",
+        "displayName": "Placeholder",
+        "canonical": "#667286",
+        "oklch": "oklch(54.9% 0.034 261)",
+        "tonalRamp": [
+          "oklch(15% 0.017 261)",
+          "oklch(26% 0.022 261)",
+          "oklch(38% 0.027 261)",
+          "oklch(50% 0.032 261)",
+          "oklch(62% 0.031 261)",
+          "oklch(74% 0.026 261)",
+          "oklch(85% 0.022 261)",
+          "oklch(95% 0.017 261)"
+        ]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "Page White",
+        "canonical": "#ffffff",
+        "oklch": "oklch(100.0% 0.000 90)",
+        "tonalRamp": [
+          "oklch(15% 0.000 90)",
+          "oklch(26% 0.000 90)",
+          "oklch(38% 0.000 90)",
+          "oklch(50% 0.000 90)",
+          "oklch(62% 0.000 90)",
+          "oklch(74% 0.000 90)",
+          "oklch(85% 0.000 90)",
+          "oklch(95% 0.000 90)"
+        ]
+      },
+      "mist": {
+        "role": "neutral",
+        "displayName": "Cool Mist",
+        "canonical": "#f2f4f6",
+        "oklch": "oklch(96.6% 0.003 248)",
+        "tonalRamp": [
+          "oklch(15% 0.002 248)",
+          "oklch(26% 0.002 248)",
+          "oklch(38% 0.003 248)",
+          "oklch(50% 0.003 248)",
+          "oklch(62% 0.003 248)",
+          "oklch(74% 0.003 248)",
+          "oklch(85% 0.002 248)",
+          "oklch(95% 0.002 248)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#d5dae0",
+        "oklch": "oklch(88.6% 0.010 253)",
+        "tonalRamp": [
+          "oklch(15% 0.005 253)",
+          "oklch(26% 0.006 253)",
+          "oklch(38% 0.008 253)",
+          "oklch(50% 0.009 253)",
+          "oklch(62% 0.009 253)",
+          "oklch(74% 0.008 253)",
+          "oklch(85% 0.006 253)",
+          "oklch(95% 0.005 253)"
+        ]
+      },
+      "border-soft": {
+        "role": "neutral",
+        "displayName": "Soft Hairline",
+        "canonical": "#e6e9ed",
+        "oklch": "oklch(93.3% 0.006 255)",
+        "tonalRamp": [
+          "oklch(15% 0.003 255)",
+          "oklch(26% 0.004 255)",
+          "oklch(38% 0.005 255)",
+          "oklch(50% 0.006 255)",
+          "oklch(62% 0.006 255)",
+          "oklch(74% 0.005 255)",
+          "oklch(85% 0.004 255)",
+          "oklch(95% 0.003 255)"
+        ]
+      },
+      "input-border": {
+        "role": "neutral",
+        "displayName": "Field Edge",
+        "canonical": "#8591a3",
+        "oklch": "oklch(65.3% 0.030 258)",
+        "tonalRamp": [
+          "oklch(15% 0.015 258)",
+          "oklch(26% 0.019 258)",
+          "oklch(38% 0.024 258)",
+          "oklch(50% 0.028 258)",
+          "oklch(62% 0.028 258)",
+          "oklch(74% 0.023 258)",
+          "oklch(85% 0.019 258)",
+          "oklch(95% 0.015 258)"
+        ]
+      },
+      "rail": {
+        "role": "neutral",
+        "displayName": "Rail Navy",
+        "canonical": "#0c1b33",
+        "oklch": "oklch(22.3% 0.051 259)",
+        "tonalRamp": [
+          "oklch(15% 0.026 259)",
+          "oklch(26% 0.033 259)",
+          "oklch(38% 0.040 259)",
+          "oklch(50% 0.048 259)",
+          "oklch(62% 0.047 259)",
+          "oklch(74% 0.039 259)",
+          "oklch(85% 0.032 259)",
+          "oklch(95% 0.026 259)"
+        ]
+      },
+      "rail-text": {
+        "role": "neutral",
+        "displayName": "Rail Text",
+        "canonical": "#c9d3e2",
+        "oklch": "oklch(86.4% 0.023 258)",
+        "tonalRamp": [
+          "oklch(15% 0.012 258)",
+          "oklch(26% 0.015 258)",
+          "oklch(38% 0.018 258)",
+          "oklch(50% 0.022 258)",
+          "oklch(62% 0.021 258)",
+          "oklch(74% 0.018 258)",
+          "oklch(85% 0.015 258)",
+          "oklch(95% 0.012 258)"
+        ]
+      },
+      "rail-muted": {
+        "role": "neutral",
+        "displayName": "Rail Muted",
+        "canonical": "#93a1b8",
+        "oklch": "oklch(70.6% 0.037 260)",
+        "tonalRamp": [
+          "oklch(15% 0.019 260)",
+          "oklch(26% 0.024 260)",
+          "oklch(38% 0.029 260)",
+          "oklch(50% 0.035 260)",
+          "oklch(62% 0.034 260)",
+          "oklch(74% 0.028 260)",
+          "oklch(85% 0.023 260)",
+          "oklch(95% 0.019 260)"
+        ]
+      },
+      "success-soft": {
+        "role": "secondary",
+        "displayName": "Ledger Green Ground",
+        "canonical": "#e8f3ed",
+        "oklch": "oklch(95.4% 0.014 162)",
+        "tonalRamp": [
+          "oklch(15% 0.007 162)",
+          "oklch(26% 0.009 162)",
+          "oklch(38% 0.011 162)",
+          "oklch(50% 0.013 162)",
+          "oklch(62% 0.013 162)",
+          "oklch(74% 0.011 162)",
+          "oklch(85% 0.009 162)",
+          "oklch(95% 0.007 162)"
+        ]
+      },
+      "success-edge": {
+        "role": "secondary",
+        "displayName": "Ledger Green Edge",
+        "canonical": "#b5d6c4",
+        "oklch": "oklch(84.7% 0.043 162)",
+        "tonalRamp": [
+          "oklch(15% 0.021 162)",
+          "oklch(26% 0.027 162)",
+          "oklch(38% 0.034 162)",
+          "oklch(50% 0.040 162)",
+          "oklch(62% 0.039 162)",
+          "oklch(74% 0.033 162)",
+          "oklch(85% 0.027 162)",
+          "oklch(95% 0.021 162)"
+        ]
+      },
+      "success-ink": {
+        "role": "secondary",
+        "displayName": "Ledger Green Ink",
+        "canonical": "#12492f",
+        "oklch": "oklch(36.2% 0.073 159)",
+        "tonalRamp": [
+          "oklch(15% 0.036 159)",
+          "oklch(26% 0.046 159)",
+          "oklch(38% 0.057 159)",
+          "oklch(50% 0.068 159)",
+          "oklch(62% 0.066 159)",
+          "oklch(74% 0.055 159)",
+          "oklch(85% 0.045 159)",
+          "oklch(95% 0.036 159)"
+        ]
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Caution Amber",
+        "canonical": "#8a6100",
+        "oklch": "oklch(52.2% 0.108 80)",
+        "tonalRamp": [
+          "oklch(15% 0.054 80)",
+          "oklch(26% 0.069 80)",
+          "oklch(38% 0.085 80)",
+          "oklch(50% 0.101 80)",
+          "oklch(62% 0.099 80)",
+          "oklch(74% 0.083 80)",
+          "oklch(85% 0.068 80)",
+          "oklch(95% 0.054 80)"
+        ]
+      },
+      "warning-soft": {
+        "role": "secondary",
+        "displayName": "Caution Amber Ground",
+        "canonical": "#fbf3dc",
+        "oklch": "oklch(96.4% 0.031 91)",
+        "tonalRamp": [
+          "oklch(15% 0.016 91)",
+          "oklch(26% 0.020 91)",
+          "oklch(38% 0.025 91)",
+          "oklch(50% 0.029 91)",
+          "oklch(62% 0.029 91)",
+          "oklch(74% 0.024 91)",
+          "oklch(85% 0.020 91)",
+          "oklch(95% 0.016 91)"
+        ]
+      },
+      "warning-edge": {
+        "role": "secondary",
+        "displayName": "Caution Amber Edge",
+        "canonical": "#e2c878",
+        "oklch": "oklch(83.8% 0.104 92)",
+        "tonalRamp": [
+          "oklch(15% 0.052 92)",
+          "oklch(26% 0.066 92)",
+          "oklch(38% 0.082 92)",
+          "oklch(50% 0.098 92)",
+          "oklch(62% 0.095 92)",
+          "oklch(74% 0.079 92)",
+          "oklch(85% 0.065 92)",
+          "oklch(95% 0.052 92)"
+        ]
+      },
+      "warning-ink": {
+        "role": "secondary",
+        "displayName": "Caution Amber Ink",
+        "canonical": "#5c4003",
+        "oklch": "oklch(39.3% 0.080 80)",
+        "tonalRamp": [
+          "oklch(15% 0.040 80)",
+          "oklch(26% 0.051 80)",
+          "oklch(38% 0.063 80)",
+          "oklch(50% 0.075 80)",
+          "oklch(62% 0.073 80)",
+          "oklch(74% 0.061 80)",
+          "oklch(85% 0.050 80)",
+          "oklch(95% 0.040 80)"
+        ]
+      },
+      "danger": {
+        "role": "secondary",
+        "displayName": "Removal Red",
+        "canonical": "#a3271f",
+        "oklch": "oklch(47.3% 0.162 29)",
+        "tonalRamp": [
+          "oklch(15% 0.081 29)",
+          "oklch(26% 0.103 29)",
+          "oklch(38% 0.127 29)",
+          "oklch(50% 0.152 29)",
+          "oklch(62% 0.148 29)",
+          "oklch(74% 0.123 29)",
+          "oklch(85% 0.101 29)",
+          "oklch(95% 0.081 29)"
+        ]
+      },
+      "danger-hover": {
+        "role": "secondary",
+        "displayName": "Removal Red Hover",
+        "canonical": "#86201a",
+        "oklch": "oklch(41.2% 0.138 28)",
+        "tonalRamp": [
+          "oklch(15% 0.069 28)",
+          "oklch(26% 0.088 28)",
+          "oklch(38% 0.109 28)",
+          "oklch(50% 0.130 28)",
+          "oklch(62% 0.126 28)",
+          "oklch(74% 0.105 28)",
+          "oklch(85% 0.086 28)",
+          "oklch(95% 0.069 28)"
+        ]
+      },
+      "danger-soft": {
+        "role": "secondary",
+        "displayName": "Removal Red Ground",
+        "canonical": "#fbecea",
+        "oklch": "oklch(95.4% 0.017 27)",
+        "tonalRamp": [
+          "oklch(15% 0.008 27)",
+          "oklch(26% 0.011 27)",
+          "oklch(38% 0.013 27)",
+          "oklch(50% 0.016 27)",
+          "oklch(62% 0.015 27)",
+          "oklch(74% 0.013 27)",
+          "oklch(85% 0.010 27)",
+          "oklch(95% 0.008 27)"
+        ]
+      },
+      "danger-edge": {
+        "role": "secondary",
+        "displayName": "Removal Red Edge",
+        "canonical": "#e5b5b0",
+        "oklch": "oklch(81.5% 0.056 25)",
+        "tonalRamp": [
+          "oklch(15% 0.028 25)",
+          "oklch(26% 0.036 25)",
+          "oklch(38% 0.044 25)",
+          "oklch(50% 0.053 25)",
+          "oklch(62% 0.052 25)",
+          "oklch(74% 0.043 25)",
+          "oklch(85% 0.035 25)",
+          "oklch(95% 0.028 25)"
+        ]
+      },
+      "danger-ink": {
+        "role": "secondary",
+        "displayName": "Removal Red Ink",
+        "canonical": "#7d1d17",
+        "oklch": "oklch(39.1% 0.132 28)",
+        "tonalRamp": [
+          "oklch(15% 0.066 28)",
+          "oklch(26% 0.084 28)",
+          "oklch(38% 0.104 28)",
+          "oklch(50% 0.124 28)",
+          "oklch(62% 0.120 28)",
+          "oklch(74% 0.100 28)",
+          "oklch(85% 0.082 28)",
+          "oklch(95% 0.066 28)"
+        ]
+      },
+      "rail-rule": {
+        "role": "neutral",
+        "displayName": "Rail Rule",
+        "canonical": "rgba(255, 255, 255, 0.14)",
+        "tonalRamp": [
+          "oklch(15% 0.000 90)",
+          "oklch(26% 0.000 90)",
+          "oklch(38% 0.000 90)",
+          "oklch(50% 0.000 90)",
+          "oklch(62% 0.000 90)",
+          "oklch(74% 0.000 90)",
+          "oklch(85% 0.000 90)",
+          "oklch(95% 0.000 90)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page title, once per page."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section headings."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Sub-headings inside a section and the statement title."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Section sub-lines, status lines, table values."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase column heads, statement group heads, phone cell labels."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Right-aligned tabular counts in the statement and tables."
+      },
+      "figure-closing": {
+        "displayName": "Closing Figure",
+        "purpose": "The clean-leads figure under the double rule."
+      }
+    },
+    "shadows": [
+      {
+        "name": "focus",
+        "value": "0 0 0 2px #ffffff, 0 0 0 4px #1d4e89",
+        "purpose": "Keyboard focus ring on light surfaces."
+      },
+      {
+        "name": "focus-on-dark",
+        "value": "0 0 0 2px #0c1b33, 0 0 0 4px #ffffff",
+        "purpose": "Keyboard focus ring on the navy rail."
+      },
+      {
+        "name": "tab-underline",
+        "value": "inset 0 -2px 0 #12305a",
+        "purpose": "Selected tab underline; hairline colour on hover."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state",
+        "value": "0.15s ease",
+        "purpose": "Background, border and text colour changes on controls, rows and links."
+      },
+      {
+        "name": "step",
+        "value": "0.2s ease",
+        "purpose": "Workflow strip markers and connecting rule."
+      },
+      {
+        "name": "veil-in",
+        "value": "0.2s ease 0.4s both",
+        "purpose": "Loading veil and spinner fade in only after a 0.4s delay."
+      },
+      {
+        "name": "spinner",
+        "value": "0.75s linear infinite",
+        "purpose": "Global spinner rotation."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "All animation and transition durations under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "strip-compact",
+        "value": "900px"
+      },
+      {
+        "name": "stack",
+        "value": "640px"
+      },
+      {
+        "name": "strip-current-only",
+        "value": "560px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Filled navy; the one main action of a section.",
+      "html": "<button class=\"ds-btn-primary\">Clean my leads</button>",
+      "css": ".ds-btn-primary { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; font-weight: 600; font-size: 0.92rem; min-height: 2.5rem; padding: 0 0.9rem; border-radius: var(--lf-radius, 4px); cursor: pointer; transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; background: var(--lf-primary, #12305a); color: #ffffff; border: 1px solid var(--lf-primary, #12305a); } .ds-btn-primary:hover { background: var(--lf-primary-hover, #0c1b33); border-color: var(--lf-primary-hover, #0c1b33); } .ds-btn-primary:focus-visible { box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1d4e89; outline: none; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "White with a field-edge border; other useful actions.",
+      "html": "<button class=\"ds-btn-secondary\">Start over</button>",
+      "css": ".ds-btn-secondary { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; font-weight: 600; font-size: 0.92rem; min-height: 2.5rem; padding: 0 0.9rem; border-radius: var(--lf-radius, 4px); cursor: pointer; transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; background: #ffffff; color: var(--lf-title, #0c1b33); border: 1px solid var(--lf-input-border, #8591a3); } .ds-btn-secondary:hover { background: var(--lf-mist, #f2f4f6); border-color: var(--lf-title, #0c1b33); } .ds-btn-secondary:focus-visible { box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1d4e89; outline: none; }"
+    },
+    {
+      "name": "Tertiary Button",
+      "kind": "button",
+      "refersTo": "button-tertiary",
+      "description": "Text button for help and minor actions.",
+      "html": "<button class=\"ds-btn-tertiary\">How it works</button>",
+      "css": ".ds-btn-tertiary { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; font-weight: 600; font-size: 0.92rem; min-height: 2.25rem; background: none; border: none; border-radius: var(--lf-radius, 4px); color: var(--lf-link, #1d4e89); cursor: pointer; transition: color 0.15s ease; } .ds-btn-tertiary:hover { color: var(--lf-primary-hover, #0c1b33); text-decoration: underline; text-underline-offset: 0.18em; } .ds-btn-tertiary:focus-visible { box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1d4e89; outline: none; }"
+    },
+    {
+      "name": "Delete Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "The one colour exception: delete and undo are red.",
+      "html": "<button class=\"ds-btn-danger\">Delete list</button>",
+      "css": ".ds-btn-danger { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; font-weight: 600; font-size: 0.92rem; min-height: 2.5rem; padding: 0 0.9rem; border-radius: var(--lf-radius, 4px); cursor: pointer; transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; background: #a3271f; color: #ffffff; border: 1px solid #a3271f; } .ds-btn-danger:hover { background: #86201a; border-color: #86201a; } .ds-btn-danger:focus-visible { box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1d4e89; outline: none; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "White field with a visible edge; label in ink navy at 600.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">New Master list name</span><input class=\"ds-input\" placeholder=\"Cleaned 2026-09-30\"></label>",
+      "css": ".ds-field { display: block; font-family: 'Libre Franklin', 'Segoe UI', sans-serif; } .ds-field-label { display: block; font-size: 0.875rem; font-weight: 600; color: var(--lf-title, #0c1b33); margin-bottom: 0.3rem; } .ds-input { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; width: 100%; font-size: 0.93rem; padding: 0.5rem 0.7rem; background: #ffffff; color: var(--lf-title, #0c1b33); caret-color: var(--lf-link, #1d4e89); border: 1px solid var(--lf-input-border, #8591a3); border-radius: var(--lf-radius, 4px); transition: border-color 0.15s ease, box-shadow 0.15s ease; } .ds-input::placeholder { color: var(--lf-placeholder, #667286); } .ds-input:hover { border-color: var(--lf-title, #0c1b33); } .ds-input:focus { border-color: var(--lf-link, #1d4e89); box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1d4e89; outline: none; }"
+    },
+    {
+      "name": "Rail Navigation",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Flat navy rail; the current page is a lighter filled row with heavier white text.",
+      "html": "<nav class=\"ds-rail\"><a class=\"ds-rail-link ds-rail-current\" href=\"#\" aria-current=\"page\">Clean Leads</a><a class=\"ds-rail-link\" href=\"#\">Lead Database</a><a class=\"ds-rail-link\" href=\"#\">Users &amp; Access</a></nav>",
+      "css": ".ds-rail { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; background: var(--lf-rail, #0c1b33); padding: 0.75rem; width: 260px; border-top: 1px solid rgba(255,255,255,0.14); } .ds-rail-link { display: block; padding: 0.55rem 0.85rem; margin-bottom: 0.15rem; border-radius: var(--lf-radius, 4px); color: var(--lf-rail-text, #c9d3e2); font-size: 0.9rem; font-weight: 500; text-decoration: none; transition: background-color 0.15s ease; } .ds-rail-link:hover { background: rgba(255,255,255,0.07); } .ds-rail-current, .ds-rail-current:hover { background: rgba(255,255,255,0.13); color: #ffffff; font-weight: 700; } .ds-rail-link:focus-visible { outline: none; box-shadow: 0 0 0 2px #0c1b33, 0 0 0 4px #ffffff; }"
+    },
+    {
+      "name": "Tag",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "Small non-interactive marker for a fact about a row.",
+      "html": "<span class=\"ds-tag\">You</span>",
+      "css": ".ds-tag { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; display: inline-block; padding: 0.05rem 0.4rem; border-radius: 2px; background: var(--lf-primary-soft, #e9eef5); color: var(--lf-primary, #12305a); font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }"
+    },
+    {
+      "name": "Workflow Strip",
+      "kind": "custom",
+      "refersTo": "step-marker",
+      "description": "Four steps on one ruled line: done is outlined with a tick, current is filled.",
+      "html": "<nav class=\"ds-stepper\" aria-label=\"Progress\"><div class=\"ds-step ds-done\"><span class=\"ds-step-dot\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12.5l4.5 4.5L19 7.5\"/></svg></span><span class=\"ds-step-label\">Upload</span></div><div class=\"ds-step-line ds-done\"></div><div class=\"ds-step ds-active\" aria-current=\"step\"><span class=\"ds-step-dot\">2</span><span class=\"ds-step-label\">Review</span></div><div class=\"ds-step-line\"></div><div class=\"ds-step ds-todo\"><span class=\"ds-step-dot\">3</span><span class=\"ds-step-label\">Clean</span></div><div class=\"ds-step-line\"></div><div class=\"ds-step ds-todo\"><span class=\"ds-step-dot\">4</span><span class=\"ds-step-label\">Download</span></div></nav>",
+      "css": ".ds-stepper { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; display: flex; align-items: center; gap: 0.6rem; } .ds-step { display: flex; align-items: center; gap: 0.6rem; } .ds-step-dot { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.8rem; font-variant-numeric: tabular-nums; border: 1px solid var(--lf-input-border, #8591a3); color: var(--lf-muted, #5a6679); background: #ffffff; } .ds-done .ds-step-dot { border-color: var(--lf-primary, #12305a); color: var(--lf-primary, #12305a); } .ds-active .ds-step-dot { background: var(--lf-primary, #12305a); border-color: var(--lf-primary, #12305a); color: #ffffff; } .ds-step-label { font-weight: 600; font-size: 0.9rem; color: var(--lf-title, #0c1b33); } .ds-active .ds-step-label { font-weight: 700; } .ds-todo .ds-step-label { color: var(--lf-muted, #5a6679); font-weight: 500; } .ds-step-line { flex: 1; height: 1px; min-width: 1rem; background: var(--lf-border, #d5dae0); } .ds-step-line.ds-done { background: var(--lf-primary, #12305a); }"
+    },
+    {
+      "name": "Status Line",
+      "kind": "custom",
+      "refersTo": "status-success",
+      "description": "One-line outcome message; only outcomes get a tint and an edge.",
+      "html": "<div class=\"ds-status ds-status-success\" role=\"status\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M8 12.5l2.8 2.8L16 9.5\"/></svg><span class=\"ds-status-title\">File uploaded</span><span class=\"ds-status-detail\">sample_leads.csv · 260 rows · 6 columns</span></div>",
+      "css": ".ds-status { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; padding: 0.55rem 0.85rem; border-radius: var(--lf-radius, 4px); border: 1px solid; font-size: 0.93rem; } .ds-status-success { background: var(--lf-success-soft, #e8f3ed); border-color: #b5d6c4; color: #12492f; } .ds-status-title { font-weight: 600; } .ds-status-detail { color: var(--lf-body, #36435a); }"
+    },
+    {
+      "name": "The Statement",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "Signature: rows in, each deduction with its share, rows out, closed under a double rule.",
+      "html": "<div class=\"ds-why\"><div class=\"ds-why-line ds-why-open\"><span>In your file</span><span class=\"ds-why-count\">260</span></div><div class=\"ds-why-head\"><span>Data quality</span><b>152</b></div><div class=\"ds-why-row\"><span class=\"ds-why-label\">Garbled characters<small>set aside</small></span><span class=\"ds-why-bar\"><span style=\"width:51%\"></span></span><span class=\"ds-why-count\">78</span></div><div class=\"ds-why-row\"><span class=\"ds-why-label\">India-based contacts<small>Indian location or .in email</small></span><span class=\"ds-why-bar\"><span style=\"width:34%\"></span></span><span class=\"ds-why-count\">51</span></div><div class=\"ds-why-line ds-why-total\"><span>Total removed</span><span class=\"ds-why-count\">152</span></div><div class=\"ds-why-line ds-why-close\"><span>Clean leads</span><span class=\"ds-why-count\">108</span></div></div>",
+      "css": ".ds-why { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; max-width: 760px; color: var(--lf-title, #0c1b33); } .ds-why-line { display: flex; justify-content: space-between; align-items: baseline; font-weight: 600; font-size: 0.95rem; } .ds-why-open { padding: 0.6rem 0; border-top: 1px solid var(--lf-title, #0c1b33); border-bottom: 1px solid var(--lf-border, #d5dae0); margin-bottom: 1.1rem; } .ds-why-head { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 0.4rem; border-bottom: 1px solid var(--lf-title, #0c1b33); font-size: 0.74rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--lf-muted, #5a6679); } .ds-why-head b { font-size: 0.95rem; letter-spacing: 0; color: var(--lf-title, #0c1b33); font-variant-numeric: tabular-nums; } .ds-why-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px 6.5rem; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-bottom: 1px solid var(--lf-border-soft, #e6e9ed); } .ds-why-label { font-weight: 500; font-size: 0.92rem; line-height: 1.3; } .ds-why-label small { display: block; font-weight: 400; font-size: 0.78rem; color: var(--lf-muted, #5a6679); } .ds-why-bar { height: 4px; background: var(--lf-border-soft, #e6e9ed); overflow: hidden; } .ds-why-bar span { display: block; height: 100%; background: var(--lf-primary, #12305a); } .ds-why-count { text-align: right; font-weight: 600; font-size: 0.95rem; font-variant-numeric: tabular-nums; } .ds-why-total { margin-top: 1.1rem; padding: 0.6rem 0 0.7rem; border-top: 1px solid var(--lf-title, #0c1b33); } .ds-why-close { padding: 0.7rem 0 0.2rem; border-top: 6px double var(--lf-title, #0c1b33); font-size: 1.02rem; font-weight: 700; } .ds-why-close .ds-why-count { font-size: 1.35rem; font-weight: 700; line-height: 1.1; }"
+    },
+    {
+      "name": "Section with Panel",
+      "kind": "card",
+      "refersTo": "subcard",
+      "description": "A section is a band under a hairline; related controls share one mist panel.",
+      "html": "<section class=\"ds-section\"><div class=\"ds-section-head\"><span class=\"ds-badge\" aria-hidden=\"true\">2</span><div><h2 class=\"ds-h2\">Check columns &amp; choose options</h2><div class=\"ds-sub\">Only Email is required.</div></div></div><div class=\"ds-panel\">Remove leads already on your lists</div></section>",
+      "css": ".ds-section { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; border-top: 1px solid var(--lf-border, #d5dae0); padding: 0.4rem 0 1.75rem; } .ds-section-head { display: flex; align-items: flex-start; gap: 0.7rem; margin: 1.1rem 0 0.9rem; } .ds-badge { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.82rem; font-weight: 600; color: #ffffff; background: var(--lf-primary, #12305a); } .ds-h2 { margin: 0; font-size: 1.2rem; line-height: 1.3; letter-spacing: -0.01em; font-weight: 600; color: var(--lf-title, #0c1b33); } .ds-sub { margin-top: 0.2rem; font-size: 0.93rem; line-height: 1.45; color: var(--lf-body, #36435a); } .ds-panel { background: var(--lf-mist, #f2f4f6); border-radius: var(--lf-radius, 4px); padding: 0.9rem 1.2rem 1.1rem; font-size: 0.95rem; font-weight: 600; color: var(--lf-title, #0c1b33); }"
+    },
+    {
+      "name": "Empty State",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "Dashed placeholder: what is empty and what to do about it.",
+      "html": "<div class=\"ds-empty\"><div class=\"ds-empty-icon\"><svg width=\"26\" height=\"26\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 13l2.5-7h11L20 13v5H4z\"/><path d=\"M4 13h4.5l1 2h5l1-2H20\"/></svg></div><div class=\"ds-empty-title\">No uploads yet</div><div class=\"ds-empty-text\">Upload a file above to start this list.</div></div>",
+      "css": ".ds-empty { font-family: 'Libre Franklin', 'Segoe UI', sans-serif; text-align: center; padding: 1.6rem 1.2rem; border: 1px dashed #b3bcc8; border-radius: var(--lf-radius, 4px); background: #ffffff; } .ds-empty-icon { line-height: 1; margin-bottom: 0.45rem; color: var(--lf-muted, #5a6679); } .ds-empty-title { font-weight: 600; font-size: 1rem; color: var(--lf-title, #0c1b33); } .ds-empty-text { color: var(--lf-body, #36435a); font-size: 0.9rem; margin-top: 0.25rem; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Private Bank Statement",
+    "overview": "LeadFlow reads like a statement from a private bank: nothing decorative, every figure ruled and aligned, confidence carried by restraint. The page is white. A single cool grey is the only second surface. Navy ink carries the type, the rail and the main action of each section. The product's promise is that the numbers can be defended, so the interface is set the way a reconciliation is set: rows in, each deduction with its reason, rows out, closed under a double rule.\n\nThe system is flat. There are no gradients, glows, blur or drop shadows anywhere in the build; the only `box-shadow` in the stylesheet is the keyboard focus ring and the tab underline. A section is a band of the page under a hairline, not a floating box. Colour outside navy appears only when it means something: green for a finished outcome, amber for a caution, red for a failure or a delete.\n\nThe look was chosen by the user as the familiar, premium end of the range, replacing an indigo and purple gradient look the user rejected as reading \"AI generated\".",
+    "keyCharacteristics": [
+      "White page, one cool grey second surface, hairline rules.",
+      "Navy ink for type, the rail and primary actions; a lighter navy for links, carets and focus.",
+      "One face, Libre Franklin, in four weights; figures in tabular numerals on a shared right edge.",
+      "4px corners on controls and panels; sections have no corners because they have no box.",
+      "Totals close under a double rule.",
+      "State is never carried by colour alone: every state also changes weight, shape, an icon or the words."
+    ],
+    "rules": [
+      {
+        "name": "The Colour Means Something Rule",
+        "body": "Green, amber and red appear only as an outcome, a caution, or a failure or delete. A next step or a piece of plain information is text with an icon, no tint and no box.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Red Exception Rule",
+        "body": "Buttons are navy, white or text. The single exception is a delete or undo button, which is red in all three ranks.",
+        "section": "colors"
+      },
+      {
+        "name": "The Shared Right Edge Rule",
+        "body": "Figures are set in tabular numerals and right-aligned so every number in a column ends on the same edge.",
+        "section": "typography"
+      },
+      {
+        "name": "The Column Head Rule",
+        "body": "Uppercase tracked type is for labelling a column or a group of figures. It is not used above headings or as running text.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Fill Rule",
+        "body": "Every surface is one solid colour. If a surface needs to stand apart, it gets a rule or the mist fill, never a shadow.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do open every section with a 1px hairline (#d5dae0) and leave it unboxed.",
+      "Do use mist (#f2f4f6) as the only second surface, for grouping related controls.",
+      "Do give each section one filled navy action; everything else is a white bordered button or a text button.",
+      "Do set figures in tabular numerals on a shared right edge, and close a total under the double rule.",
+      "Do pair every state with a second signal: weight, a filled versus outlined shape, an icon, or the words.",
+      "Do keep field borders at #8591a3 so inputs stay visibly inputs.",
+      "Do keep the two-tone focus ring on every interactive control, inverted on the rail.",
+      "Do keep corners at 4px on controls and panels."
+    ],
+    "donts": [
+      "Don't use gradients, glows, blur or drop shadows; the build has none.",
+      "Don't float sections as rounded cards on a tinted ground.",
+      "Don't use green, amber or red for decoration or for ranking buttons; red buttons are for delete and undo only.",
+      "Don't tint or box a next step or plain information; only outcomes get a tinted line.",
+      "Don't put both a step badge and an icon on one section heading.",
+      "Don't enlarge metrics into hero numbers; the only large figure is the statement's closing line.",
+      "Don't add a second typeface."
+    ]
+  }
+}

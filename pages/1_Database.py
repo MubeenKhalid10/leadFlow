@@ -28,12 +28,16 @@ from dataio import (
     MAX_UNCOMPRESSED_UPLOAD_BYTES,
     auto_map_columns,
     extract_emails_from_file,
+    forget_file,
     get_upload_size,
+    group_download_name,
+    keyword_regex,
+    keyword_terms,
     load_file,
     validate_upload,
 )
 st.set_page_config(
-    page_title="LeadFlow — Database",
+    page_title="Lead Database — LeadFlow",
     page_icon="🗄️",
     layout="wide",
 )
@@ -47,20 +51,16 @@ auth.require_role("admin")
 auth.render_user_badge()
 theme.sidebar_nav(auth.current_user(), current="pages/1_Database.py")
 
-st.markdown('<div class="lf-topbar">', unsafe_allow_html=True)
-theme.render_topbar(show_how=False)
-st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("## 🗄️ Lead Database")
-st.caption(
-    "Your saved lead lists. When you clean a file, LeadFlow can skip anyone on these lists — "
-    "leads you already have, bounced emails, MQLs and people who unsubscribed."
+theme.page_header(
+    "database", "Lead Database",
+    "Search, add and manage your saved lists. Leads on these lists can be removed when you clean a file.",
 )
 
 # --- Ensure the database is reachable ----------------------------------------
 _ok, _err = db.init_db()
 if not _ok:
-    st.error("⚠️ **The lead database isn't reachable right now.** Your lists can't be shown or changed until it's back.")
+    st.error("**The lead database isn't reachable right now.** Your lists can't be shown or changed until it's back.",
+             icon=":material/error:")
     with st.expander("How to fix this", expanded=True):
         st.markdown(
             "1. Make sure **PostgreSQL is running**.\n"
@@ -69,12 +69,11 @@ if not _ok:
             "3. See the **README** for full setup steps.\n\n"
             f"**Technical details:** `{_err}`"
         )
-        if st.button("🔄 Retry database connection"):
+        if st.button("Retry database connection", key="retry_db_conn", icon=":material/refresh:"):
             st.rerun()
     st.stop()
 
 _cfg = db.get_config()
-st.caption(f"✅ Connected to **{_cfg['dbname']}** at {_cfg['host']}:{_cfg['port']}")
 
 
 # ============================================================================ #
@@ -93,18 +92,18 @@ MASTER_FIELD_MAP = {
     "Location": "location",
 }
 
-NEW_LIST_LABEL = "➕ Create a new list…"
+NEW_LIST_LABEL = "+ Create a new list…"
 
 EMAIL_CATEGORIES = {
     # key: (tab label, icon, description shown above the uploader)
-    "mql": ("MQL", "🎯", "Leads already marked as marketing-qualified. Only an email column is needed — LeadFlow finds it automatically."),
-    "bounce": ("Bounced", "🚫", "Emails that bounced in past campaigns. Only an email column is needed — LeadFlow finds it automatically."),
-    "unsub": ("Unsubscribed", "✋", "People who asked not to be contacted. Only an email column is needed — LeadFlow finds it automatically."),
+    "mql": ("MQL", "ads_click", "Leads already marked as marketing-qualified."),
+    "bounce": ("Bounced", "block", "Emails that bounced in past campaigns."),
+    "unsub": ("Unsubscribed", "unsubscribe", "People who asked not to be contacted."),
 }
 
 
 def fmt_bytes(n) -> str:
-    if n is None:
+    if n is None or pd.isna(n):
         return "—"
     n = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -143,7 +142,7 @@ def history_table(category: str | None, limit: int = 200) -> pd.DataFrame:
     if hist.empty:
         return pd.DataFrame(
             columns=["Category", "List", "File", "File size", "Records in file", "Records added",
-                     "Skipped (existing)", "Uploaded by", "Upload date", "Upload time"]
+                     "Skipped (existing)", "Uploaded by", "Upload date", "Upload time", "Status"]
         )
     local = hist["uploaded_at"].map(_to_local)
     return pd.DataFrame(
@@ -158,20 +157,37 @@ def history_table(category: str | None, limit: int = 200) -> pd.DataFrame:
             "Uploaded by": hist["uploaded_by"],
             "Upload date": local.map(lambda t: f"{t:%d-%b-%Y}"),
             "Upload time": local.map(lambda t: f"{t:%I:%M %p}"),
+            "Status": hist["reverted_at"].map(lambda t: "Added" if pd.isna(t) else f"Undone {fmt_datetime(t)}"),
         }
     )
+
+
+NO_UPLOADS_TEXT = "No uploads yet"
+
+
+def last_upload_metric(col, category: str) -> None:
+    """'Last upload' metric: just the date (fits the card), with the full detail in its tooltip."""
+    try:
+        text = last_upload_text(category)
+    except Exception:
+        col.metric("Last upload", "—")
+        return
+    if text == NO_UPLOADS_TEXT:
+        col.metric("Last upload", "—", help=text)
+        return
+    col.metric("Last upload", text.split(",")[0].split(" · ")[0], help=text)
 
 
 def last_upload_text(category: str) -> str:
     hist = db.get_upload_history(category, 1)
     if hist.empty:
-        return "No uploads yet"
+        return NO_UPLOADS_TEXT
     row = hist.iloc[0]
     return f"{fmt_datetime(row['uploaded_at'])} · {row['file_name']} ({int(row['rows_written']):,} added)"
 
 
-def log_upload(category, f, rows_in_file, rows_written, rows_skipped, list_name):
-    """Record one file import in upload_history (never blocks the import)."""
+def log_upload(category, f, rows_in_file, rows_written, rows_skipped, list_name, list_id=None):
+    """Record an import that added no rows in upload_history (never blocks the import)."""
     try:
         db.record_upload(
             category=category,
@@ -182,9 +198,16 @@ def log_upload(category, f, rows_in_file, rows_written, rows_skipped, list_name)
             list_name=list_name,
             file_size_bytes=get_upload_size(f),
             uploaded_by=(auth.current_user() or {}).get("email"),
+            list_id=list_id,
         )
     except Exception as e:
         st.warning(f"Your leads were imported, but this upload couldn't be added to the upload history ({e}).")
+
+
+def upload_meta(f, rows_in_file, list_name, **extra):
+    """What the database logs about a merge (written in the same transaction as its rows)."""
+    return dict(file_name=f.name, file_size_bytes=get_upload_size(f), rows_in_file=rows_in_file,
+                list_name=list_name, uploaded_by=(auth.current_user() or {}).get("email"), **extra)
 
 
 def records_from_master_df(df):
@@ -226,8 +249,8 @@ def show_import_messages(base: str) -> None:
 
 def upload_limits_caption():
     st.caption(
-        f"Accepted: CSV, Excel (XLSX/XLS), ZIP or GZ · up to {fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES)} "
-        f"({fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES)} if compressed). You can select several files at once."
+        f"CSV, XLSX, XLS, ZIP or GZ · up to {fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES)} "
+        f"({fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES)} if compressed) · you can select several files at once"
     )
 
 
@@ -239,7 +262,7 @@ def show_history(category: str) -> None:
         theme.friendly_error("Couldn't load the upload history", "Try refreshing the page.", e)
         return
     if table.empty:
-        theme.empty_state("🕒", "No uploads yet", "Your completed uploads will appear here.")
+        theme.empty_state("history", "No uploads yet", "Files you add above will be listed here.")
     else:
         st.dataframe(table, width="stretch", hide_index=True)
 
@@ -262,60 +285,183 @@ def pick_target_list(existing_names, key_prefix):
     return choice
 
 
-def render_list_manager(category: str, lists_df: pd.DataFrame, count_col: str, noun: str, key_prefix: str):
-    """Rename / preview / delete controls, one row per list."""
+def fmt_date(ts) -> str:
+    return "—" if ts is None or pd.isna(ts) else f"{_to_local(ts):%d-%b-%Y}"
+
+
+def _delete_list(category, list_id):
+    if category == "master":
+        db.delete_master_list(list_id)
+    else:
+        db.delete_email_list(category, list_id)
+
+
+@st.dialog("Delete this list?")
+def confirm_delete_file(category, list_id, name, rows, noun):
+    st.markdown(f"**{html.escape(str(name))}** and all **{rows:,} {noun}** in it will be permanently deleted.")
+    st.warning("This can't be undone. Its entries stay in the upload history.", icon=":material/warning:")
+    yes, no = st.columns(2)
+    if yes.button("Delete permanently", key="del_confirm_file", type="primary", width="stretch", icon=":material/delete:"):
+        try:
+            _delete_list(category, list_id)
+        except Exception as e:
+            theme.friendly_error("Couldn't delete this list", "Nothing was deleted. Please try again.", e)
+            return
+        st.toast(f"Deleted '{name}' ({rows:,} {noun}).", icon=":material/delete:")
+        st.rerun()
+    if no.button("Keep it", key="reset_cancel_delete", width="stretch"):
+        st.rerun()
+
+
+@st.dialog("Undo this upload?")
+def confirm_revert(upload_id, file_name, list_name, added, noun, when):
+    st.markdown(
+        f"This removes the **{added:,} {noun}** that **{html.escape(str(file_name))}** added to "
+        f"**{html.escape(str(list_name))}** on {when}."
+    )
+    st.caption("Leads added by other uploads, and leads that were already in the list, are not affected.")
+    st.warning("This can't be undone.", icon=":material/warning:")
+    yes, no = st.columns(2)
+    if yes.button("Undo upload", key="del_confirm_revert", type="primary", width="stretch", icon=":material/undo:"):
+        try:
+            removed = db.revert_upload(upload_id)
+        except Exception as e:
+            theme.friendly_error("Couldn't undo this upload", "Nothing was changed. Please try again.", e)
+            return
+        st.toast(f"Upload undone: {removed:,} {noun} removed from '{list_name}'.", icon=":material/undo:")
+        st.rerun()
+    if no.button("Keep it", key="reset_cancel_revert", width="stretch"):
+        st.rerun()
+
+
+def render_files(category, lists_df, count_col, noun, storage_bytes, stored_rows):
+    """One row per saved list: created date, rows, approximate size, merges, delete."""
     if lists_df.empty:
-        theme.empty_state("📭", "No lists yet", "Upload a file above to create your first list.")
+        theme.empty_state("inbox", "No lists yet", "Add a file above to create your first list.")
         return
-    total = int(lists_df[count_col].sum())
-    st.caption(f"{len(lists_df)} list(s) · {total:,} {noun} total")
+    try:
+        merges = db.get_merge_counts(category)
+    except Exception:
+        merges = {}
+    per_row = storage_bytes / stored_rows if storage_bytes and stored_rows else None
+    widths = [4, 2, 2, 2, 1.5, 1.8]
+    st.caption(f"{len(lists_df)} list(s) · {int(lists_df[count_col].sum()):,} {noun} in total. "
+               "Size is the approximate space each list uses in the database.")
+    heads = ["List", "Created", noun.capitalize(), "Size", "Uploads", ""]
+    theme.table_header(f"list_{category}", widths, heads)
     for row in lists_df.itertuples():
-        head_l, head_c, head_r = st.columns([5, 2, 2])
-        head_l.markdown(f"**{row.name}**")
-        head_c.markdown(f"{'👥' if category == 'master' else '✉️'} {int(getattr(row, count_col)):,} {noun}")
-        head_r.caption(f"Created {pd.to_datetime(row.created_at):%Y-%m-%d}")
-        with st.expander("⚙️ Rename · preview · delete", expanded=False):
-            new_name = st.text_input("Rename to", value=row.name, key=f"{key_prefix}_rename_{row.id}")
-            act_l, act_r = st.columns(2)
-            if act_l.button("💾 Save name", key=f"{key_prefix}_save_{row.id}"):
-                try:
-                    if category == "master":
-                        db.rename_master_list(row.id, new_name)
-                    else:
-                        db.rename_email_list(category, row.id, new_name)
-                    st.toast(f"Renamed to '{new_name}'.", icon="✅")
-                    st.rerun()
-                except Exception as e:
-                    theme.friendly_error("Couldn't rename this list", "Please try again with a different name.", e)
-            if act_r.button("👁️ Preview first 20", key=f"{key_prefix}_prev_{row.id}"):
-                try:
-                    if category == "master":
-                        preview = db.get_master_contacts_df([row.id], limit=20)
-                    else:
-                        preview = db.get_emails_df(category, [row.id], limit=20)
-                    st.dataframe(preview, width="stretch")
-                except Exception as e:
-                    theme.friendly_error("Couldn't load a preview", "Please try again.", e)
-            st.markdown("---")
-            st.markdown(
-                f'<div class="lf-note">⚠️ Deleting removes <strong>{html.escape(str(row.name))}</strong> and all '
-                f'{int(getattr(row, count_col)):,} {noun} in it. This can\'t be undone.</div>',
-                unsafe_allow_html=True,
-            )
-            confirm = st.checkbox(
-                f"Yes, permanently delete this list and all its {noun}",
-                key=f"{key_prefix}_confirm_{row.id}",
-            )
-            if st.button("🗑️ Delete list", key=f"{key_prefix}_del_{row.id}", disabled=not confirm):
-                try:
-                    if category == "master":
-                        db.delete_master_list(row.id)
-                    else:
-                        db.delete_email_list(category, row.id)
-                    st.toast(f"Deleted '{row.name}'.", icon="🗑️")
-                    st.rerun()
-                except Exception as e:
-                    theme.friendly_error("Couldn't delete this list", "Nothing was deleted. Please try again.", e)
+        rows = int(getattr(row, count_col))
+        c = theme.table_row(f"list_{category}_{row.id}", widths)
+        theme.table_cell(c[0], heads[0], row.name, strong=True)
+        theme.table_cell(c[1], heads[1], fmt_date(row.created_at))
+        theme.table_cell(c[2], heads[2], f"{rows:,}")
+        theme.table_cell(c[3], heads[3], f"≈ {fmt_bytes(rows * per_row)}" if per_row else "—")
+        theme.table_cell(c[4], heads[4], f"{merges.get(int(row.id), 0):,}")
+        if c[5].button("Delete", key=f"del_file_{category}_{row.id}", width="stretch", icon=":material/delete:",
+                       help=f"Permanently delete this list and its {rows:,} {noun}. You'll be asked to confirm."):
+            confirm_delete_file(category, int(row.id), row.name, rows, noun)
+
+
+def render_merge_history(category, lists_df, noun):
+    """Every merge into one chosen list, with a revert button for each."""
+    if lists_df.empty:
+        theme.empty_state("history", "No lists yet", "Uploads appear here once you add a file.")
+        return
+    names = {int(r.id): r.name for r in lists_df.itertuples()}
+    list_id = st.selectbox(
+        "List", list(names), format_func=lambda i: names.get(i, str(i)), key=f"merge_file_{category}",
+        help="Shows every upload that was merged into this list.",
+    )
+    try:
+        merges = db.get_list_merges(category, list_id)
+    except Exception as e:
+        theme.friendly_error("Couldn't load the merge history", "Try refreshing the page.", e)
+        return
+    if merges.empty:
+        theme.empty_state("history", "No uploads recorded for this list", "Uploads appear here after you add a file to it.")
+        return
+    widths = [2.2, 3.5, 1.6, 2.6, 2.4, 1.8]
+    heads = ["Uploaded", "File", noun.capitalize() + " added", "By", "Status", ""]
+    theme.table_header(f"merge_{category}", widths, heads)
+    for m in merges.itertuples():
+        c = theme.table_row(f"merge_{category}_{m.id}", widths)
+        added = int(m.rows_written or 0)
+        theme.table_cell(c[0], heads[0], fmt_datetime(m.uploaded_at))
+        theme.table_cell(c[1], heads[1], m.file_name, strong=True)
+        theme.table_cell(c[2], heads[2], f"{added:,}")
+        theme.table_cell(c[3], heads[3], m.uploaded_by or "—")
+        if not pd.isna(m.reverted_at):
+            theme.table_cell(c[4], heads[4], f"Undone {fmt_date(m.reverted_at)}", icon_name="undo")
+        elif added == 0:
+            theme.table_cell(c[4], heads[4], "Nothing added")
+        elif pd.isna(m.batch_created_at):
+            c[4].markdown("Can't be undone", help="This upload was recorded before undo was available, and "
+                          "its rows couldn't be matched with certainty, so it can't be undone safely.")
+        else:
+            theme.table_cell(c[4], heads[4], "In the list", icon_name="check")
+            if c[5].button("Undo", key=f"del_revert_{m.id}", width="stretch", icon=":material/undo:",
+                           help=f"Remove the {added:,} {noun} this upload added. You'll be asked to confirm."):
+                confirm_revert(int(m.id), m.file_name, names[list_id], added, noun, fmt_datetime(m.uploaded_at))
+
+
+MASTER_SEARCH_LIMIT = 500_000
+
+
+def render_master_search(result):
+    """Master search results grouped by the searched field's value, with downloads for all
+    results or one group at a time (named after the group, e.g. Real_Estate.csv)."""
+    if not result:
+        return
+    field, terms = result["field"], result["terms"]
+    found = result["df"].rename(columns={v: k for k, v in MASTER_FIELD_MAP.items()})
+    found = found[[c for c in MASTER_FIELD_MAP if c in found.columns]]
+    if len(found) > MASTER_SEARCH_LIMIT:
+        found = found.head(MASTER_SEARCH_LIMIT)
+        st.warning(f"More than {MASTER_SEARCH_LIMIT:,} leads match — showing and downloading the first "
+                   f"{MASTER_SEARCH_LIMIT:,}. Narrow your search to get the rest.")
+    if found.empty:
+        theme.empty_state("search_off", "No matching leads",
+                          f"No Master lead's {field} matches “{html.escape(', '.join(terms))}”.")
+        return
+
+    values = found[field].fillna("").astype(str).str.strip()
+    group_series = values.replace("", "Unknown")
+    group_counts = group_series.value_counts().to_dict()
+    ordered_groups = [k for k, _ in sorted(group_counts.items(), key=lambda x: -x[1])]
+    per_term = " · ".join(
+        f"<b>{html.escape(t)}</b> {int(values.str.contains(keyword_regex(t), case=False, regex=True).sum()):,}"
+        for t in terms
+    )
+    theme.status_line(
+        "success", f"{len(found):,} leads found in {len(ordered_groups):,} {html.escape(field)} groups",
+        f"Per search value: {per_term}" if len(terms) > 1 else "",
+    )
+
+    safe_field = field.lower().replace(" ", "_")
+    all_col, one_sel, one_dl = st.columns([1.2, 1.6, 1.2], vertical_alignment="bottom")
+    all_col.caption(f"Downloads as {group_download_name(field, ordered_groups)}")
+    all_col.download_button(
+        f"Download all ({len(found):,} leads)",
+        icon=":material/download:",
+        data=lambda df=found: df.to_csv(index=False).encode("utf-8"),
+        file_name=group_download_name(field, ordered_groups),
+        mime="text/csv", type="primary", key=f"dl_master_search_all_{safe_field}", width="stretch",
+    )
+    if len(ordered_groups) > 1:
+        one_group = one_sel.selectbox("Or download one group", ordered_groups, key=f"master_search_one_{safe_field}",
+                                      format_func=lambda g: f"{g} ({group_counts[g]:,} leads)")
+        one_df = found[group_series == one_group]
+        one_dl.download_button(
+            f"Download {one_group} ({group_counts[one_group]:,})",
+            icon=":material/download:",
+            data=lambda df=one_df: df.to_csv(index=False).encode("utf-8"),
+            file_name=group_download_name(field, [one_group]),
+            mime="text/csv", key=f"dl_master_search_one_{safe_field}", width="stretch",
+        )
+    st.dataframe(
+        pd.DataFrame({field: ordered_groups, "Leads": [group_counts[g] for g in ordered_groups]}),
+        width="stretch", hide_index=True, height=min(35 * (len(ordered_groups) + 1) + 3, 320),
+    )
 
 
 # ============================================================================ #
@@ -327,31 +473,17 @@ except Exception as e:
     theme.friendly_error("Couldn't read your lead counts", "The numbers below may show 0. Try refreshing the page.", e)
     COUNTS = {c: {"lists": 0, "rows": 0, "unique": 0} for c in db.ALL_CATEGORIES}
 
-# At-a-glance dashboard (live database counts + this session's campaign file).
-dash = st.columns(5)
-dash[0].metric("🗂️ Master leads", f"{COUNTS['master']['unique']:,}",
-               help="Total unique leads stored in your main database.")
-dash[1].metric("🎯 MQL leads", f"{COUNTS['mql']['unique']:,}",
-               help="Leads already marked as marketing-qualified.")
-dash[2].metric("🚫 Bounced emails", f"{COUNTS['bounce']['unique']:,}",
-               help="Emails that bounced in past campaigns.")
-dash[3].metric("✋ Unsubscribed", f"{COUNTS['unsub']['unique']:,}",
-               help="People who asked not to be contacted.")
-_campaign = st.session_state.get("cleaned_df")
-dash[4].metric("📣 Final Campaign", f"{len(_campaign):,}" if _campaign is not None else "—",
-               help="Clean leads waiting to be downloaded on the Clean Leads page in this session.")
 
-
-def _tab_label(icon, label, cat):
-    return f"{icon}  {label} ({COUNTS[cat]['unique']:,})"
+def _tab_label(label, cat):
+    return f"{label} ({COUNTS[cat]['unique']:,})"
 
 
 tab_master, tab_mql, tab_bounce, tab_unsub = st.tabs(
     [
-        _tab_label("🗂️", "Master leads", "master"),
-        _tab_label("🎯", "MQL", "mql"),
-        _tab_label("🚫", "Bounced", "bounce"),
-        _tab_label("✋", "Unsubscribed", "unsub"),
+        _tab_label("Master leads", "master"),
+        _tab_label("MQL", "mql"),
+        _tab_label("Bounced", "bounce"),
+        _tab_label("Unsubscribed", "unsub"),
     ]
 )
 
@@ -360,190 +492,234 @@ tab_master, tab_mql, tab_bounce, tab_unsub = st.tabs(
 # MASTER FILE
 # ---------------------------------------------------------------------------- #
 with tab_master:
-    theme.section_header(
-        "01-Overview", "Master leads",
-        "Your main database of leads. Anyone in here can be skipped automatically when you clean a new file.",
-    )
-    m = COUNTS["master"]
-    try:
-        stor = db.get_storage_info()
-    except Exception as e:
-        stor = None
-        st.warning(f"Storage details are unavailable right now ({e}).")
-
-    c1, c2, _, _ = st.columns(4)
-    c1.metric("📧 Leads (unique emails)", f"{m['unique']:,}", help="Each email address is counted once.")
-    c2.metric("📋 Lists", f"{m['lists']:,}", help="Named groups your Master leads are saved in.")
-
-    if m["rows"] > m["unique"]:
-        st.info(
-            f"**{m['rows'] - m['unique']:,} email(s) appear in more than one Master list.** "
-            "That's fine — each is counted once, and new uploads never add an email that's already saved."
+    with theme.card("master_overview"):
+        theme.section_header(
+            None, "Master leads",
+            "Your main lead database. Leads here are skipped when you clean a new file.", "folder_open",
         )
+        m = COUNTS["master"]
+        try:
+            stor = db.get_storage_info()
+        except Exception as e:
+            stor = None
+            st.warning(f"Storage details are unavailable right now ({e}).")
 
-    with st.expander("💾 Storage & upload limits", expanded=False):
-        c3, c4 = st.columns(2)
-        c3.metric("🗄️ Database size", fmt_bytes(stor["database_bytes"]) if stor else "—")
-        c4.metric("🗂️ Master leads storage", fmt_bytes(stor["master_bytes"]) if stor else "—")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Leads", f"{m['unique']:,}", help="Unique email addresses — each is counted once.")
+        c2.metric("Lists", f"{m['lists']:,}", help="Named groups your Master leads are saved in.")
+        last_upload_metric(c3, "master")
 
-        c5, c6, c7, c8 = st.columns(4)
-        if stor and stor["quota_bytes"]:
-            free = max(stor["quota_bytes"] - stor["database_bytes"], 0)
-            used_pct = min(stor["database_bytes"] / stor["quota_bytes"] * 100, 100)
-            c5.metric("💾 Available Storage", fmt_bytes(free), f"{used_pct:.1f}% of {fmt_bytes(stor['quota_bytes'])} used", delta_color="off")
-        else:
-            c5.metric("💾 Available Storage", "Not configured")
-        c6.metric("📐 Est. size per 1M records", fmt_bytes(stor["bytes_per_million"]) if stor and stor["bytes_per_million"] else "—")
-        c7.metric("⬆️ Max upload (CSV/XLSX)", fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES))
-        c8.metric("🗜️ Max upload (ZIP/GZ)", fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES))
-        st.caption(
-            f"Sizes are read live from PostgreSQL (`pg_database_size` / `pg_total_relation_size`). "
-            f"A ZIP/GZ upload may expand to at most {fmt_bytes(MAX_ARCHIVE_CONTENT_BYTES)} of data. "
-            + (
-                "Set `storage_quota_mb` under `[postgres]` in secrets.toml (or `PG_STORAGE_QUOTA_MB`) "
-                "to your database plan's limit to see available storage."
-                if not (stor and stor["quota_bytes"]) else ""
+        if m["rows"] > m["unique"]:
+            st.caption(
+                f"{m['rows'] - m['unique']:,} email(s) appear in more than one Master list. "
+                "Each is counted once, and new uploads never add an email that's already saved."
             )
+
+        with st.expander("Storage & upload limits", expanded=False):
+            c3, c4 = st.columns(2)
+            c3.metric("Database size", fmt_bytes(stor["database_bytes"]) if stor else "—")
+            c4.metric("Master leads storage", fmt_bytes(stor["master_bytes"]) if stor else "—")
+
+            c5, c6, c7, c8 = st.columns(4)
+            if stor and stor["quota_bytes"]:
+                free = max(stor["quota_bytes"] - stor["database_bytes"], 0)
+                used_pct = min(stor["database_bytes"] / stor["quota_bytes"] * 100, 100)
+                c5.metric("Available storage", fmt_bytes(free), f"{used_pct:.1f}% of {fmt_bytes(stor['quota_bytes'])} used", delta_color="off")
+            else:
+                c5.metric("Available storage", "Not configured")
+            c6.metric("Est. size per 1M records", fmt_bytes(stor["bytes_per_million"]) if stor and stor["bytes_per_million"] else "—")
+            c7.metric("Max upload (CSV/XLSX)", fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES))
+            c8.metric("Max upload (ZIP/GZ)", fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES))
+            st.caption(
+                f"Sizes are read live from PostgreSQL (`pg_database_size` / `pg_total_relation_size`). "
+                f"A ZIP/GZ upload may expand to at most {fmt_bytes(MAX_ARCHIVE_CONTENT_BYTES)} of data. "
+                + (
+                    "Set `storage_quota_mb` under `[postgres]` in secrets.toml (or `PG_STORAGE_QUOTA_MB`) "
+                    "to your database plan's limit to see available storage."
+                    if not (stor and stor["quota_bytes"]) else ""
+                )
+            )
+            st.caption(f"Connected to {_cfg['dbname']} at {_cfg['host']}:{_cfg['port']}.")
+
+    with theme.card("master_search"):
+        theme.section_header(
+            None, "Search & download",
+            "Find Master leads by field and download them. Your database isn't changed.", "search",
+        )
+        with st.form("master_search_form", border=False):
+            s_field, s_text, s_go = st.columns([1, 3, 1], vertical_alignment="bottom")
+            search_field = s_field.selectbox("Search in", list(MASTER_FIELD_MAP),
+                                             index=list(MASTER_FIELD_MAP).index("Industry"), key="master_search_field")
+            search_chips = s_text.multiselect("Keywords", options=[], accept_new_options=True,
+                                              key="master_search_keywords",
+                                              placeholder="Type a keyword and press Enter, e.g. Real Estate")
+            searched = s_go.form_submit_button("Search", type="primary", width="stretch", icon=":material/search:")
+            st.caption("Add one or more keywords. Keywords match whole words only — "
+                       "“CTO” finds “Co-founder & CTO”, not “Inspectors”.")
+        if searched:
+            terms = keyword_terms(search_chips)
+            if not terms:
+                st.session_state.pop("master_search", None)
+                st.error("Add at least one keyword to search for, then click Search.", icon=":material/error:")
+            else:
+                try:
+                    with st.spinner("Searching your Master database…"):
+                        found = db.search_master_contacts(MASTER_FIELD_MAP[search_field], terms,
+                                                          limit=MASTER_SEARCH_LIMIT + 1)
+                    st.session_state["master_search"] = {"field": search_field, "terms": terms, "df": found}
+                except Exception as e:
+                    theme.friendly_error("Couldn't search your Master database", "Please try again.", e)
+        render_master_search(st.session_state.get("master_search"))
+
+    with theme.card("master_add"):
+        theme.section_header(
+            None, "Add leads",
+            "Upload one or more files. Only new emails are added — nothing already saved is changed or deleted.",
+            "upload_file",
         )
 
-    st.divider()
-    theme.section_header(
-        "02-Add leads", "Add leads to your Master database",
-        "Upload one or more files. New leads are added; leads already saved (same email) are skipped. "
-        "Nothing already in your database is changed or deleted.",
-    )
+        show_import_messages("master_import_files")
+        master_files = st.file_uploader(
+            "Master file(s)",
+            type=["csv", "xlsx", "xls", "zip", "gz"],
+            accept_multiple_files=True,
+            key=uploader_key("master_import_files"),
+            max_upload_size=MAX_COMPRESSED_UPLOAD_BYTES // MB,
+        )
+        upload_limits_caption()
+        if master_files:
+            st.caption("Selected: " + " · ".join(f"{f.name} ({fmt_bytes(get_upload_size(f))})" for f in master_files))
 
-    show_import_messages("master_import_files")
-    master_files = st.file_uploader(
-        "Master file(s) — CSV, XLSX, XLS, ZIP, or GZ",
-        type=["csv", "xlsx", "xls", "zip", "gz"],
-        accept_multiple_files=True,
-        key=uploader_key("master_import_files"),
-        max_upload_size=MAX_COMPRESSED_UPLOAD_BYTES // MB,
-    )
-    upload_limits_caption()
-    if master_files:
-        st.caption("Selected: " + " · ".join(f"{f.name} ({fmt_bytes(get_upload_size(f))})" for f in master_files))
+        try:
+            master_lists_df = db.get_master_lists()
+        except Exception as e:
+            master_lists_df = pd.DataFrame()
+            st.warning(f"Couldn't load your Master lists ({e}). You can still create a new one.")
+        master_names = master_lists_df["name"].tolist() if not master_lists_df.empty else []
 
-    try:
-        master_lists_df = db.get_master_lists()
-    except Exception as e:
-        master_lists_df = pd.DataFrame()
-        st.warning(f"Couldn't load your Master lists ({e}). You can still create a new one.")
-    master_names = master_lists_df["name"].tolist() if not master_lists_df.empty else []
+        master_target = pick_target_list(master_names, "master_target")
 
-    master_target = pick_target_list(master_names, "master_target")
-
-    if st.button("📥  Add to Master database", type="primary", key="btn_import_master",
-                 help="Adds only the new leads from your file(s). Leads already saved are skipped."):
-        clean_name = (master_target or "").strip()
-        if not master_files:
-            st.error("Choose at least one file first — drag it into the box above or click **Browse files**.")
-        elif not clean_name:
-            st.error("Enter a name for the new list, or pick an existing list.")
-        else:
-            upload_errors = [err for f in master_files if (err := validate_upload(f))]
-            if upload_errors:
-                for err in upload_errors:
-                    st.error(err)
+        if st.button("Add to Master database", type="primary", key="save_import_master", icon=":material/add:",
+                     help="Adds only the new leads from your file(s). Leads already saved are skipped."):
+            clean_name = (master_target or "").strip()
+            if not master_files:
+                st.error("Choose at least one file first — drag it into the box above or click **Browse files**.")
+            elif not clean_name:
+                st.error("Enter a name for the new list, or pick an existing list.")
             else:
-                written_total = 0
-                skipped_files = []
-                dedup_skipped_total = 0
-                before_total = m["unique"]
-                try:
-                    list_id = db.get_or_create_master_list(clean_name)
-                    batch_seen: set = set()
-                    for f in master_files:
-                        with st.spinner(f"Reading {f.name}…"):
-                            fdf = load_file(f)
-                        rows_in_file = len(fdf)
-                        records, mapping = records_from_master_df(fdf)
-                        if records is None:
-                            skipped_files.append(f.name)
-                            continue
-
-                        # --- Global dedup, server-side --------------------------
-                        # Only the emails that already exist anywhere in the Master
-                        # database come back (COPY into a temp table + indexed join).
-                        with st.spinner(f"Checking {len(records):,} leads against your Master database…"):
-                            emails = [db.normalize_email(r.get("email", "")) for r in records]
-                            existing = db.find_existing_master_emails(emails)
-                        before_dedup = len(records)
-                        kept = []
-                        for r, e in zip(records, emails):
-                            if not e or e in existing or e in batch_seen:
+                upload_errors = [err for f in master_files if (err := validate_upload(f))]
+                if upload_errors:
+                    for err in upload_errors:
+                        st.error(err)
+                else:
+                    written_total = 0
+                    skipped_files = []
+                    dedup_skipped_total = 0
+                    before_total = m["unique"]
+                    try:
+                        list_id = db.get_or_create_master_list(clean_name)
+                        batch_seen: set = set()
+                        for f in master_files:
+                            with st.spinner(f"Reading {f.name}…"):
+                                fdf = load_file(f)
+                            rows_in_file = len(fdf)
+                            records, mapping = records_from_master_df(fdf)
+                            if records is None:
+                                skipped_files.append(f.name)
+                                forget_file(f)
                                 continue
-                            batch_seen.add(e)
-                            kept.append(r)
-                        records = kept
-                        dedup_skipped = before_dedup - len(records)
-                        dedup_skipped_total += dedup_skipped
 
-                        if dedup_skipped > 0:
-                            st.info(
-                                f"**{f.name}**: {dedup_skipped:,} lead(s) are already saved (or repeated in the file) "
-                                f"and will be skipped. {len(records):,} new leads will be added."
-                            )
+                            # --- Global dedup, server-side --------------------------
+                            # Only the emails that already exist anywhere in the Master
+                            # database come back (COPY into a temp table + indexed join).
+                            with st.spinner(f"Checking {len(records):,} leads against your Master database…"):
+                                emails = [db.normalize_email(r.get("email", "")) for r in records]
+                                existing = db.find_existing_master_emails(emails)
+                            before_dedup = len(records)
+                            kept = []
+                            for r, e in zip(records, emails):
+                                if not e or e in existing or e in batch_seen:
+                                    continue
+                                batch_seen.add(e)
+                                kept.append(r)
+                            records = kept
+                            dedup_skipped = before_dedup - len(records)
+                            dedup_skipped_total += dedup_skipped
 
-                        written = 0
-                        if records:
-                            with st.spinner(f"Saving {len(records):,} new leads from {f.name}…"):
-                                written = db.upsert_master_contacts(list_id, records)
-                                written_total += written
-                        log_upload("master", f, rows_in_file, written, dedup_skipped, clean_name)
-                        del fdf, records, emails, existing
+                            if dedup_skipped > 0:
+                                st.info(
+                                    f"**{f.name}**: {dedup_skipped:,} lead(s) are already saved (or repeated in the file) "
+                                    f"and will be skipped. {len(records):,} new leads will be added."
+                                )
 
-                    messages = []
-                    if skipped_files:
-                        messages.append(("warning",
-                            "**Some files were skipped** — we couldn't find an email column in: "
-                            + ", ".join(skipped_files)
-                            + ". Check that each file has a column of email addresses, then try again."
-                        ))
-                    if written_total:
-                        messages.append(("success",
-                            f"✅ **Upload complete** — {written_total:,} new leads were added to Master list "
-                            f"**'{clean_name}'**. Master database: {before_total:,} → {before_total + written_total:,} leads"
-                            + (f" ({dedup_skipped_total:,} already saved, skipped)." if dedup_skipped_total else ".")
-                        ))
-                    elif not skipped_files:
-                        if dedup_skipped_total:
-                            messages.append(("info",
-                                f"**Upload complete** — all {dedup_skipped_total:,} leads are already in your "
-                                "Master database, so there was nothing new to add."
-                            ))
-                        else:
+                            written = 0
+                            if records:
+                                with st.spinner(f"Saving {len(records):,} new leads from {f.name}…"):
+                                    # Logged in upload_history in the same transaction, so it can be reverted.
+                                    written = db.upsert_master_contacts(
+                                        list_id, records,
+                                        upload=upload_meta(f, rows_in_file, clean_name, rows_skipped=dedup_skipped),
+                                    )
+                                    written_total += written
+                            else:
+                                log_upload("master", f, rows_in_file, 0, dedup_skipped, clean_name, list_id)
+                            del fdf, records, emails, existing
+                            forget_file(f)
+
+                        messages = []
+                        if skipped_files:
                             messages.append(("warning",
-                                "**No email addresses found.** The file has an email column, but it's empty. "
-                                "Check the file and try again."
+                                "**Some files were skipped** — we couldn't find an email column in: "
+                                + ", ".join(skipped_files)
+                                + ". Check that each file has a column of email addresses, then try again."
                             ))
-                    # Done = every file had an Email column and at least one valid email.
-                    done = not skipped_files and bool(written_total or dedup_skipped_total)
-                    if written_total or done:
-                        finish_import("master_import_files", messages, clear_uploader=done)
-                    for level, text in messages:
-                        getattr(st, level)(text)
-                except Exception as e:
-                    theme.friendly_error(
-                        "Upload could not be completed",
-                        "Some leads may not have been added. Your file is still selected — check it and click "
-                        "the button again (leads that were already added will simply be skipped).",
-                        e,
-                    )
+                        if written_total:
+                            messages.append(("success",
+                                f"**Upload complete** — {written_total:,} new leads were added to Master list "
+                                f"**'{clean_name}'**. Master database: {before_total:,} → {before_total + written_total:,} leads"
+                                + (f" ({dedup_skipped_total:,} already saved, skipped)." if dedup_skipped_total else ".")
+                            ))
+                        elif not skipped_files:
+                            if dedup_skipped_total:
+                                messages.append(("info",
+                                    f"**Upload complete** — all {dedup_skipped_total:,} leads are already in your "
+                                    "Master database, so there was nothing new to add."
+                                ))
+                            else:
+                                messages.append(("warning",
+                                    "**No email addresses found.** The file has an email column, but it's empty. "
+                                    "Check the file and try again."
+                                ))
+                        # Done = every file had an Email column and at least one valid email.
+                        done = not skipped_files and bool(written_total or dedup_skipped_total)
+                        if written_total or done:
+                            finish_import("master_import_files", messages, clear_uploader=done)
+                        for level, text in messages:
+                            getattr(st, level)(text)
+                    except Exception as e:
+                        theme.friendly_error(
+                            "Upload could not be completed",
+                            "Some leads may not have been added. Your file is still selected — check it and click "
+                            "the button again (leads that were already added will simply be skipped).",
+                            e,
+                        )
 
-    st.divider()
-    theme.section_header("03-Your lists", "Manage Lists", "Rename, preview or delete your Master lists.")
-    try:
-        master_lists_df = db.get_master_lists()
-    except Exception as e:
-        master_lists_df = pd.DataFrame()
-        theme.friendly_error("Couldn't load your Master lists", "Try refreshing the page.", e)
-    render_list_manager("master", master_lists_df, "contact_count", "leads", "m")
+    with theme.card("master_files"):
+        theme.section_header(None, "Your lists", "Every Master list, its size, and how many uploads it holds.", "list_alt")
+        try:
+            master_lists_df = db.get_master_lists()
+        except Exception as e:
+            master_lists_df = pd.DataFrame()
+            theme.friendly_error("Couldn't load your Master lists", "Try refreshing the page.", e)
+        render_files("master", master_lists_df, "contact_count", "leads",
+                     stor["master_bytes"] if stor else None, m["rows"])
 
-    st.divider()
-    theme.section_header("04-History", "Upload history", "Every file added to your Master database.")
-    show_history("master")
+    with theme.card("master_history"):
+        theme.section_header(None, "History", "What was added, when, and by whom.", "history")
+        with st.expander("Uploads per list — undo an upload", expanded=False):
+            render_merge_history("master", master_lists_df, "leads")
+        with st.expander("All uploads", expanded=False):
+            show_history("master")
 
 
 # ---------------------------------------------------------------------------- #
@@ -553,112 +729,124 @@ def render_email_category(category: str):
     label, icon, description = EMAIL_CATEGORIES[category]
     cnt = COUNTS[category]
 
-    theme.section_header("01-Overview", f"{label}", description.split(" Only")[0])
-    c1, c2, c3 = st.columns(3)
-    c1.metric(f"{icon} Emails", f"{cnt['unique']:,}", help="Each email address is counted once.")
-    c2.metric("📋 Lists", f"{cnt['lists']:,}")
-    try:
-        c3.metric("🕒 Last Upload", last_upload_text(category))
-    except Exception:
-        c3.metric("🕒 Last Upload", "—")
+    with theme.card(f"{category}_overview"):
+        theme.section_header(
+            None, label, description + " Leads with these emails can be removed when you clean a file.", icon,
+        )
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Emails", f"{cnt['unique']:,}", help="Unique email addresses — each is counted once.")
+        c2.metric("Lists", f"{cnt['lists']:,}")
+        last_upload_metric(c3, category)
 
-    st.divider()
-    theme.section_header(
-        "02-Add emails", f"Add to {label}",
-        description + " Emails already saved are skipped; nothing is changed or deleted.",
-    )
+    with theme.card(f"{category}_add"):
+        theme.section_header(
+            None, f"Add to {label}",
+            "Upload files with an email column — LeadFlow finds it automatically. Emails already saved are skipped.",
+            "upload_file",
+        )
 
-    uploader_base = f"{category}_import_files"
-    show_import_messages(uploader_base)
-    files = st.file_uploader(
-        f"{label} file(s) — CSV, XLSX, XLS, ZIP, or GZ",
-        type=["csv", "xlsx", "xls", "zip", "gz"],
-        accept_multiple_files=True,
-        key=uploader_key(uploader_base),
-        max_upload_size=MAX_COMPRESSED_UPLOAD_BYTES // MB,
-    )
-    upload_limits_caption()
-    if files:
-        st.caption("Selected: " + " · ".join(f"{f.name} ({fmt_bytes(get_upload_size(f))})" for f in files))
+        uploader_base = f"{category}_import_files"
+        show_import_messages(uploader_base)
+        files = st.file_uploader(
+            f"{label} file(s)",
+            type=["csv", "xlsx", "xls", "zip", "gz"],
+            accept_multiple_files=True,
+            key=uploader_key(uploader_base),
+            max_upload_size=MAX_COMPRESSED_UPLOAD_BYTES // MB,
+        )
+        upload_limits_caption()
+        if files:
+            st.caption("Selected: " + " · ".join(f"{f.name} ({fmt_bytes(get_upload_size(f))})" for f in files))
 
-    try:
-        lists_df = db.get_email_lists(category)
-    except Exception as e:
-        lists_df = pd.DataFrame()
-        st.warning(f"Couldn't load your {label} lists ({e}). You can still create a new one.")
-    names = lists_df["name"].tolist() if not lists_df.empty else []
+        try:
+            lists_df = db.get_email_lists(category)
+        except Exception as e:
+            lists_df = pd.DataFrame()
+            st.warning(f"Couldn't load your {label} lists ({e}). You can still create a new one.")
+        names = lists_df["name"].tolist() if not lists_df.empty else []
 
-    target = pick_target_list(names, f"{category}_target")
+        target = pick_target_list(names, f"{category}_target")
 
-    if st.button(f"📥  Add to {label}", type="primary", key=f"btn_import_{category}",
-                 help="Saves the email addresses from your file(s). Emails already saved are skipped."):
-        clean_name = (target or "").strip()
-        if not files:
-            st.error("Choose at least one file first — drag it into the box above or click **Browse files**.")
-        elif not clean_name:
-            st.error("Enter a name for the new list, or pick an existing list.")
-        else:
-            upload_errors = [err for f in files if (err := validate_upload(f))]
-            if upload_errors:
-                for err in upload_errors:
-                    st.error(err)
+        if st.button(f"Add to {label}", type="primary", key=f"save_import_{category}", icon=":material/add:",
+                     help="Saves the email addresses from your file(s). Emails already saved are skipped."):
+            clean_name = (target or "").strip()
+            if not files:
+                st.error("Choose at least one file first — drag it into the box above or click **Browse files**.")
+            elif not clean_name:
+                st.error("Enter a name for the new list, or pick an existing list.")
             else:
-                written_total = 0
-                skipped_files = []
-                try:
-                    list_id = db.get_or_create_email_list(category, clean_name)
-                    for f in files:
-                        with st.spinner(f"Reading {f.name}…"):
-                            fdf = load_file(f)
-                        rows_in_file = len(fdf)
-                        emails = extract_emails_from_file(fdf)
-                        if emails is None or emails.empty:
-                            skipped_files.append(f.name)
-                            continue
-                        with st.spinner(f"Saving {len(emails):,} emails from {f.name}…"):
-                            written = db.upsert_emails(category, list_id, emails.tolist())
-                        written_total += written
-                        log_upload(category, f, rows_in_file, written, max(rows_in_file - written, 0), clean_name)
-                        del fdf, emails
-                    messages = []
-                    if skipped_files:
-                        messages.append(("warning",
-                            "**Some files were skipped** — we couldn't find any email addresses in: "
-                            + ", ".join(skipped_files)
-                            + ". Check that each file has a column of email addresses, then try again."
-                        ))
-                    if written_total:
-                        messages.append(("success",
-                            f"✅ **Upload complete** — {written_total:,} emails were added to {label} list '{clean_name}'."))
-                    elif not skipped_files:
-                        messages.append(("info",
-                            f"**Upload complete** — no new emails were added. Every email in the file is already in "
-                            f"{label} list '{clean_name}' (the upload is still recorded in the history)."
-                        ))
-                    if written_total or not skipped_files:
-                        finish_import(uploader_base, messages, clear_uploader=not skipped_files)
-                    for level, text in messages:
-                        getattr(st, level)(text)
-                except Exception as e:
-                    theme.friendly_error(
-                        "Upload could not be completed",
-                        "Some emails may not have been added. Your file is still selected — check it and click "
-                        "the button again (emails that were already added will simply be skipped).",
-                        e,
-                    )
+                upload_errors = [err for f in files if (err := validate_upload(f))]
+                if upload_errors:
+                    for err in upload_errors:
+                        st.error(err)
+                else:
+                    written_total = 0
+                    skipped_files = []
+                    try:
+                        list_id = db.get_or_create_email_list(category, clean_name)
+                        for f in files:
+                            with st.spinner(f"Reading {f.name}…"):
+                                fdf = load_file(f)
+                            rows_in_file = len(fdf)
+                            emails = extract_emails_from_file(fdf)
+                            if emails is None or emails.empty:
+                                skipped_files.append(f.name)
+                                forget_file(f)
+                                continue
+                            with st.spinner(f"Saving {len(emails):,} emails from {f.name}…"):
+                                # Logged in upload_history in the same transaction, so it can be reverted.
+                                written = db.upsert_emails(category, list_id, emails.tolist(),
+                                                           upload=upload_meta(f, rows_in_file, clean_name))
+                            written_total += written
+                            del fdf, emails
+                            forget_file(f)
+                        messages = []
+                        if skipped_files:
+                            messages.append(("warning",
+                                "**Some files were skipped** — we couldn't find any email addresses in: "
+                                + ", ".join(skipped_files)
+                                + ". Check that each file has a column of email addresses, then try again."
+                            ))
+                        if written_total:
+                            messages.append(("success",
+                                f"**Upload complete** — {written_total:,} emails were added to {label} list '{clean_name}'."))
+                        elif not skipped_files:
+                            messages.append(("info",
+                                f"**Upload complete** — no new emails were added. Every email in the file is already in "
+                                f"{label} list '{clean_name}' (the upload is still recorded in the history)."
+                            ))
+                        if written_total or not skipped_files:
+                            finish_import(uploader_base, messages, clear_uploader=not skipped_files)
+                        for level, text in messages:
+                            getattr(st, level)(text)
+                    except Exception as e:
+                        theme.friendly_error(
+                            "Upload could not be completed",
+                            "Some emails may not have been added. Your file is still selected — check it and click "
+                            "the button again (emails that were already added will simply be skipped).",
+                            e,
+                        )
 
-    st.divider()
-    theme.section_header("03-History", "Upload history", f"Every file added to {label}.")
-    show_history(category)
+    with theme.card(f"{category}_files"):
+        theme.section_header(None, "Your lists", f"Every {label} list, its size, and how many uploads it holds.", "list_alt")
+        try:
+            lists_df = db.get_email_lists(category)
+        except Exception as e:
+            lists_df = pd.DataFrame()
+            theme.friendly_error(f"Couldn't load your {label} lists", "Try refreshing the page.", e)
+        try:
+            stor = db.get_storage_info()
+        except Exception:
+            stor = None
+        render_files(category, lists_df, "email_count", "emails",
+                     stor[f"{category}_bytes"] if stor else None, cnt["rows"])
 
-    st.divider()
-    theme.section_header("04-Your lists", "Manage Lists", f"Rename, preview or delete your {label} lists.")
-    try:
-        lists_df = db.get_email_lists(category)
-    except Exception as e:
-        lists_df = pd.DataFrame()
-        theme.friendly_error(f"Couldn't load your {label} lists", "Try refreshing the page.", e)
-    render_list_manager(category, lists_df, "email_count", "emails", category)
+    with theme.card(f"{category}_history"):
+        theme.section_header(None, "History", "What was added, when, and by whom.", "history")
+        with st.expander("Uploads per list — undo an upload", expanded=False):
+            render_merge_history(category, lists_df, "emails")
+        with st.expander("All uploads", expanded=False):
+            show_history(category)
 
 
 with tab_mql:
