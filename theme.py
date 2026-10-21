@@ -1266,8 +1266,11 @@ def inject_theme():
            --------------------------------------------------------------- */
         [class*="st-key-del_"] { --lf-btn-a: #a3271f; --lf-btn-hover: #86201a; --lf-btn-soft: #fbecea; }
 
+        /* st.link_button renders an <a data-testid="stBaseLinkButton-…">, so each rule below that
+           styles a <button> names it too (e.g. the backup's "Save …" link). */
         :is([data-testid="stMain"], [role="dialog"])
-            :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"]) button {
+            :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"]) button,
+        :is([data-testid="stMain"], [role="dialog"]) a[data-testid^="stBaseLinkButton"] {
             border-radius: var(--lf-radius) !important;
             font-weight: 600 !important;
             min-height: 2.5rem;
@@ -1277,16 +1280,18 @@ def inject_theme():
 
         /* Primary */
         :is([data-testid="stMain"], [role="dialog"])
-            button:is([kind="primary"], [kind="primaryFormSubmit"]) {
+            :is(button:is([kind="primary"], [kind="primaryFormSubmit"]), a[data-testid="stBaseLinkButton-primary"]) {
             background: var(--lf-btn-a, var(--lf-primary)) !important;
             color: #ffffff !important;
             border: 1px solid var(--lf-btn-a, var(--lf-primary)) !important;
             box-shadow: none !important;
+            text-decoration: none !important;
         }
         :is([data-testid="stMain"], [role="dialog"])
-            button:is([kind="primary"], [kind="primaryFormSubmit"]):hover {
+            :is(button:is([kind="primary"], [kind="primaryFormSubmit"]), a[data-testid="stBaseLinkButton-primary"]):hover {
             background: var(--lf-btn-hover, var(--lf-primary-hover)) !important;
             border-color: var(--lf-btn-hover, var(--lf-primary-hover)) !important;
+            color: #ffffff !important;
         }
 
         /* Secondary */
@@ -1320,7 +1325,8 @@ def inject_theme():
         /* Labels take the button's own text colour. Without this, the page-wide
            text rules (main area and sidebar) recolour the <p> inside each button. */
         :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
-            button[data-testid^="stBaseButton"] * {
+            button[data-testid^="stBaseButton"] *,
+        a[data-testid^="stBaseLinkButton"] * {
             color: inherit !important;
         }
 

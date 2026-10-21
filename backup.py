@@ -6,10 +6,15 @@ Exports the saved records of one category (Master, MQL, Bounce or Unsubscribed)
 as a CSV, or all four at once as a ZIP holding one CSV per table
 (master_contacts.csv, mql_emails.csv, bounce_emails.csv, unsub_emails.csv). Each CSV
 holds exactly the columns of its database table (read from the database, in table
-order) and each value as PostgreSQL writes it as text; nothing is added. File names
-carry the number of records actually written:
+order) and each value as PostgreSQL writes it as text; nothing is added.
+
+A table with more than PART_ROWS records is split into parts (master_contacts_part1.csv,
+master_contacts_part2.csv, …), each with the header row, so every file opens completely
+in Excel (at most 1,048,576 rows per sheet). A single category that needs parts comes as
+a ZIP of them. File names carry the number of records actually written:
 
     LeadFlow_Master_Backup_<record_count>_records_<YYYY-MM-DD>.csv   (one category)
+    LeadFlow_Master_Backup_<record_count>_records_<YYYY-MM-DD>.zip   (one category, in parts)
     LeadFlow_Backup_<record_count>_records_<YYYY-MM-DD>.zip          (all categories)
 
 How it stays small and correct with millions of rows
@@ -46,6 +51,7 @@ from pathlib import Path
 import db
 
 BATCH_ROWS = 10_000            # rows fetched from the server per round trip (~15 MB in Python)
+PART_ROWS = 1_000_000          # records per CSV file; Excel shows at most 1,048,576 rows (header included)
 DOWNLOAD_TTL_SECONDS = 30 * 60  # how long a prepared backup can be downloaded
 ROUTE_PATH = "/api/backup/{token}"
 
@@ -80,14 +86,25 @@ def scope_label(scope: str) -> str:
     return "All" if scope == "all" else db.CATEGORY_LABELS[scope]
 
 
-def backup_filename(record_count: int, day: dt.date | None = None, scope: str = "all") -> str:
-    """LeadFlow_Backup_<n>_records_<date>.zip for "all", LeadFlow_<Category>_Backup_<n>_records_<date>.csv otherwise."""
+def backup_filename(record_count: int, day: dt.date | None = None, scope: str = "all",
+                    in_parts: bool = False) -> str:
+    """LeadFlow_Backup_<n>_records_<date>.zip for "all"; LeadFlow_<Category>_Backup_<n>_records_<date>.csv
+    for one category, or .zip when it is split into parts."""
     if scope not in SCOPES:
         raise ValueError(f"Unknown backup scope: {scope!r}")
     day = day or dt.date.today()
     if scope == "all":
         return f"LeadFlow_Backup_{int(record_count)}_records_{day:%Y-%m-%d}.zip"
-    return f"LeadFlow_{scope_label(scope)}_Backup_{int(record_count)}_records_{day:%Y-%m-%d}.csv"
+    ext = "zip" if in_parts else "csv"
+    return f"LeadFlow_{scope_label(scope)}_Backup_{int(record_count)}_records_{day:%Y-%m-%d}.{ext}"
+
+
+def part_names(table: str, record_count: int, part_rows: int = PART_ROWS) -> list[str]:
+    """The CSV file(s) a table is written to: <table>.csv, or <table>_part1.csv, … when it has
+    more than part_rows records."""
+    if record_count <= part_rows:
+        return [f"{table}.csv"]
+    return [f"{table}_part{i}.csv" for i in range(1, -(-record_count // part_rows) + 1)]
 
 
 def backup_dir() -> Path:
@@ -117,28 +134,46 @@ def _select_sql(table: str, columns: list[str]) -> str:
     return f"SELECT {cols} FROM {table} t{order}"
 
 
-def _write_table(conn, table, columns, f, batch_size, on_rows) -> int:
-    """Stream one table into text file f as CSV (header = its column names); returns rows written."""
+def _write_table(conn, table, columns, open_part, batch_size, on_rows, part_rows=None) -> int:
+    """Stream one table as CSV (header = its column names) into the text file open_part(1) returns,
+    moving on to open_part(2), … whenever a file holds part_rows records (None: never).
+    Returns the rows written."""
+    written = in_part = 0
+    part = 1
+    f = open_part(part)
     writer = csv.writer(f)
     writer.writerow(columns)
-    written = 0
     named = conn.cursor(name=f"lf_backup_{table}")
     named.itersize = batch_size
     try:
         named.execute(_select_sql(table, columns))
         while rows := named.fetchmany(batch_size):
-            writer.writerows(rows)
+            start = 0
+            while start < len(rows):  # a batch can straddle two parts
+                if part_rows and in_part == part_rows:
+                    f.close()
+                    part, in_part = part + 1, 0
+                    f = open_part(part)
+                    writer = csv.writer(f)
+                    writer.writerow(columns)
+                chunk = rows[start:start + part_rows - in_part] if part_rows else rows[start:]
+                writer.writerows(chunk)
+                in_part += len(chunk)
+                start += len(chunk)
             written += len(rows)
             on_rows(len(rows))
     finally:
         named.close()
+        f.close()
     return written
 
 
 def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size: int = BATCH_ROWS,
-                 progress=None, day: dt.date | None = None) -> BackupResult:
+                 part_rows: int = PART_ROWS, progress=None, day: dt.date | None = None) -> BackupResult:
     """Export one category ("master", "mql", "bounce", "unsub") as CSV, or "all" of them as a
     ZIP of one CSV per category, into dest_dir (default: backup_dir()); returns its details.
+    A table with more than part_rows records is written as parts (see part_names()); a single
+    category in parts comes as a ZIP.
 
     progress(written, expected) is called after each batch. Raises EmptyDatabaseError when
     there is nothing to export and BackupError (or the database error) when the export fails;
@@ -148,9 +183,8 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
         raise ValueError(f"Unknown backup scope: {scope!r}")
     day = day or dt.date.today()
     cats = list(TABLES) if scope == "all" else [scope]
-    suffix = ".zip" if scope == "all" else ".csv"
     dest_dir = Path(dest_dir) if dest_dir else backup_dir()
-    fd, tmp_name = tempfile.mkstemp(prefix="leadflow_backup_", suffix=suffix + ".part", dir=dest_dir)
+    fd, tmp_name = tempfile.mkstemp(prefix="leadflow_backup_", suffix=".part", dir=dest_dir)
     os.close(fd)
     tmp_path = Path(tmp_name)
     per_category: dict[str, int] = {}
@@ -177,15 +211,22 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
                 if progress:
                     progress(written, expected_total)
 
-            if scope == "all":
+            # Part names come from the snapshot's counts, which the rows written must match.
+            names = {cat: part_names(TABLES[cat], expected[cat], part_rows) for cat in cats}
+            zipped = scope == "all" or len(names[scope]) > 1
+            if zipped:
                 with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-                    for cat in cats:  # one member per table, named after it: master_contacts.csv, …
-                        with zf.open(f"{TABLES[cat]}.csv", "w", force_zip64=True) as raw, \
-                                io.TextIOWrapper(raw, encoding="utf-8", newline="") as f:
-                            per_category[cat] = _write_table(conn, TABLES[cat], columns[cat], f, batch_size, on_rows)
+                    for cat in cats:  # members named after the table: master_contacts.csv or _part1.csv, …
+                        def open_member(part, cat=cat):
+                            # Past the last expected part only if the table grew, which the count check rejects.
+                            name = names[cat][part - 1] if part <= len(names[cat]) else f"{TABLES[cat]}_part{part}.csv"
+                            return io.TextIOWrapper(zf.open(name, "w", force_zip64=True), encoding="utf-8", newline="")
+                        per_category[cat] = _write_table(conn, TABLES[cat], columns[cat], open_member,
+                                                         batch_size, on_rows, part_rows)
             else:
-                with open(tmp_path, "w", encoding="utf-8", newline="") as f:
-                    per_category[scope] = _write_table(conn, TABLES[scope], columns[scope], f, batch_size, on_rows)
+                per_category[scope] = _write_table(
+                    conn, TABLES[scope], columns[scope],
+                    lambda part: open(tmp_path, "w", encoding="utf-8", newline=""), batch_size, on_rows)
             with open(tmp_path, "rb+") as f:
                 os.fsync(f.fileno())
 
@@ -194,10 +235,10 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
             detail = ", ".join(f"{scope_label(c)}: wrote {w:,} of {n:,}" for c, (w, n) in short.items())
             raise BackupError(f"The export was incomplete ({detail}).")
 
-        final = dest_dir / backup_filename(written, day, scope)
+        final = dest_dir / backup_filename(written, day, scope, in_parts=zipped)
         # A unique stored name, so two backups with the same count and day never collide;
         # the download is still offered under the exact backup_filename().
-        stored = dest_dir / f"{final.stem}_{secrets.token_hex(4)}{suffix}"
+        stored = dest_dir / f"{final.stem}_{secrets.token_hex(4)}{final.suffix}"
         os.replace(tmp_path, stored)
         return BackupResult(stored, final.name, written, stored.stat().st_size, per_category)
     except BaseException:

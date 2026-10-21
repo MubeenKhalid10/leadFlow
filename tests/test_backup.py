@@ -193,6 +193,77 @@ def test_progress_reports_the_running_count(seeded):
     assert [w for w, _ in calls] == sorted(w for w, _ in calls)
 
 
+# --------------------------------------------------------------------------- #
+# Splitting large tables into parts that open completely in Excel
+# --------------------------------------------------------------------------- #
+EXCEL_MAX_ROWS = 1_048_576
+
+
+def test_part_size_fits_an_excel_sheet():
+    assert backup.PART_ROWS + 1 <= EXCEL_MAX_ROWS  # + the header row
+
+
+def test_part_names():
+    assert backup.part_names("master_contacts", 0) == ["master_contacts.csv"]
+    assert backup.part_names("master_contacts", 1_000_000) == ["master_contacts.csv"]
+    assert backup.part_names("master_contacts", 1_000_001) == ["master_contacts_part1.csv", "master_contacts_part2.csv"]
+    assert backup.part_names("master_contacts", 1_963_211) == ["master_contacts_part1.csv", "master_contacts_part2.csv"]
+    assert len(backup.part_names("t", 3_000_000)) == 3 and len(backup.part_names("t", 3_000_001)) == 4
+    assert backup.backup_filename(1_963_211, DAY, "master", in_parts=True) == \
+        "LeadFlow_Master_Backup_1963211_records_2026-10-21.zip"
+
+
+def _joined_parts(members, table):
+    """The header and rows of a table's parts, in part order; every part must carry the same header."""
+    names = sorted((n for n in members if n.startswith(f"{table}_part")),
+                   key=lambda n: int(n.rsplit("part", 1)[1].split(".")[0]))
+    headers = {tuple(members[n][0]) for n in names}
+    assert len(headers) == 1
+    return list(headers.pop()), [row for n in names for row in members[n][1]], [len(members[n][1]) for n in names]
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 4, 10_000])  # batches that straddle part boundaries, and don't
+def test_category_over_the_part_size_comes_as_a_zip_of_parts(seeded, backup_tmp, batch_size):
+    result = backup.write_backup("unsub", day=DAY, part_rows=2, batch_size=batch_size)
+    assert result.filename == "LeadFlow_Unsubscribed_Backup_3_records_2026-10-21.zip"
+    assert result.media_type == "application/zip" and result.record_count == 3
+    members = _read_zip(result.path)
+    assert sorted(members) == ["unsub_emails_part1.csv", "unsub_emails_part2.csv"]
+    header, rows, sizes = _joined_parts(members, "unsub_emails")
+    assert sizes == [2, 1]
+    _assert_matches_db("unsub", header, rows)  # every record once, in order, across the parts
+    assert [p.name for p in backup_tmp.iterdir()] == [result.path.name]
+
+
+def test_category_of_exactly_the_part_size_stays_one_csv(seeded):
+    result = backup.write_backup("unsub", day=DAY, part_rows=3)
+    assert result.filename == "LeadFlow_Unsubscribed_Backup_3_records_2026-10-21.csv"
+    _assert_matches_db("unsub", *_read_csv(result.path))
+
+
+def test_all_backup_splits_only_the_tables_over_the_part_size(seeded):
+    result = backup.write_backup("all", day=DAY, part_rows=2, batch_size=2)
+    assert result.filename == "LeadFlow_Backup_9_records_2026-10-21.zip" and result.per_category == SEEDED_COUNTS
+    members = _read_zip(result.path)
+    assert sorted(members) == ["bounce_emails.csv", "master_contacts_part1.csv", "master_contacts_part2.csv",
+                               "mql_emails.csv", "unsub_emails_part1.csv", "unsub_emails_part2.csv"]
+    for cat in ("master", "unsub"):
+        header, rows, sizes = _joined_parts(members, backup.TABLES[cat])
+        assert max(sizes) <= 2
+        _assert_matches_db(cat, header, rows)
+    _assert_matches_db("mql", *members["mql_emails.csv"])
+    _assert_matches_db("bounce", *members["bounce_emails.csv"])
+
+
+def test_interrupted_split_export_leaves_no_file(seeded, backup_tmp):
+    def interrupt(written, expected):
+        if written >= 3:  # after the first part is complete
+            raise ConnectionError("connection lost")
+    with pytest.raises(ConnectionError):
+        backup.write_backup("master", part_rows=2, batch_size=1, progress=interrupt)
+    assert list(backup_tmp.iterdir()) == []
+
+
 def _bulk_insert(n_master):
     """n_master Master contacts plus a few thousand rows in each email category, in SQL."""
     with db.get_conn() as conn:
@@ -216,11 +287,11 @@ def _bulk_insert(n_master):
 LARGE_ROWS = int(os.environ.get("LEADFLOW_BACKUP_TEST_ROWS", "300000"))
 
 
-def _measured(scope):
+def _measured(scope, **kwargs):
     tracemalloc.start()
     try:
         started = time.perf_counter()
-        result = backup.write_backup(scope)
+        result = backup.write_backup(scope, **kwargs)
         elapsed = time.perf_counter() - started
         _, peak = tracemalloc.get_traced_memory()
     finally:
@@ -246,14 +317,38 @@ def test_large_backups_are_complete_and_memory_stays_bounded():
             n += 1
     assert n == counts["master"] and last[2] == f"person{LARGE_ROWS}@example.com"
 
+    # The same table split into parts: each within the part size, together every record once, in order.
+    part_rows = LARGE_ROWS // 3 + 1
+    parts = _measured("master", part_rows=part_rows)
+    assert parts.record_count == counts["master"] and parts.filename.endswith(".zip")
+    with zipfile.ZipFile(parts.path) as zf:
+        assert zf.namelist() == backup.part_names("master_contacts", counts["master"], part_rows)
+        expected_id = 1
+        for name in zf.namelist():
+            with zf.open(name) as raw:
+                reader = csv.reader(io.TextIOWrapper(raw, encoding="utf-8", newline=""))
+                assert next(reader) == MASTER_COLUMNS
+                in_part = 0
+                for row in reader:
+                    assert int(row[0]) == expected_id
+                    expected_id += 1
+                    in_part += 1
+            assert 0 < in_part <= part_rows
+        assert expected_id - 1 == counts["master"]
+
     everything = _measured("all")
     assert everything.record_count == sum(counts.values()) and everything.per_category == counts
     assert ZIP_RE.match(everything.filename).group(1) == str(sum(counts.values()))
     with zipfile.ZipFile(everything.path) as zf:
         for cat, table in backup.TABLES.items():
-            with zf.open(f"{table}.csv") as raw:
-                lines = sum(1 for _ in csv.reader(io.TextIOWrapper(raw, encoding="utf-8", newline="")))
-            assert lines == counts[cat] + 1  # + header
+            names = backup.part_names(table, counts[cat])
+            rows = 0
+            for name in names:
+                with zf.open(name) as raw:
+                    in_file = sum(1 for _ in csv.reader(io.TextIOWrapper(raw, encoding="utf-8", newline=""))) - 1
+                assert in_file <= backup.PART_ROWS  # each file opens completely in Excel
+                rows += in_file
+            assert rows == counts[cat]
 
 
 # --------------------------------------------------------------------------- #

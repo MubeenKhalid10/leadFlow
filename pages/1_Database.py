@@ -744,9 +744,16 @@ with theme.card("backup"):
         "What to back up", list(BACKUP_SCOPE_NAMES), required=True, default="all", key=BACKUP_SCOPE_KEY,
         format_func=lambda s: f"{BACKUP_SCOPE_NAMES[s]} ({_backup_rows(s):,})",
     )
+    _rows = _backup_rows(backup_scope)
+    if backup_scope == "all":
+        _what = "A ZIP with one CSV per category"
+    elif _rows > backup.PART_ROWS:
+        _what = "A ZIP of CSV files"
+    else:
+        _what = "One CSV file"
     st.caption(
-        ("A ZIP with one CSV per category. " if backup_scope == "all" else "One CSV file. ")
-        + f"About {_backup_rows(backup_scope):,} records; large backups take a minute or two to prepare."
+        f"{_what}. About {_rows:,} records; large backups take a minute or two to prepare. "
+        f"Each file holds at most {backup.PART_ROWS:,} records, so it opens completely in Excel."
     )
     if st.button("Download Backup", key="db_backup_start", icon=":material/cloud_download:", type="primary"):
         prepare_backup(backup_scope)
