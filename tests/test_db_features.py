@@ -101,7 +101,8 @@ def test_list_view_pages_and_totals(mql_records):
     assert total == total2 == 32
     assert len(page1) == 25 and len(page2) == 7
     assert set(page1["email"]).isdisjoint(set(page2["email"]) - {"user00@acme.com"})
-    assert list(page1.columns) == ["id", "email", "list_id", "list_name", "created_at"]
+    assert list(page1.columns) == ["id", "email", "list_id", "list_name", "created_at",
+                                   "first_name", "last_name", "company", "job_title"]
     # past the last page: no rows, but the true total
     rows, total = db.get_email_records("mql", limit=25, offset=100)
     assert rows.empty and total == 32

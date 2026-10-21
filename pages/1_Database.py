@@ -18,11 +18,13 @@ All counts shown here are queried live from PostgreSQL (see db.py).
 """
 
 import html
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 import Auth as auth
+import backup
 import db
 import theme
 from dataio import (
@@ -31,6 +33,7 @@ from dataio import (
     MAX_UNCOMPRESSED_UPLOAD_BYTES,
     auto_map_columns,
     extract_emails_from_file,
+    extract_mql_records,
     forget_file,
     get_upload_size,
     group_download_name,
@@ -63,18 +66,11 @@ theme.page_header(
 # --- Ensure the database is reachable ----------------------------------------
 _ok, _err = db.init_db()
 if not _ok:
-    st.error("**The lead database isn't reachable right now.** Your lists can't be shown or changed until it's back.",
-             icon=":material/error:")
-    with st.expander("How to fix this", expanded=True):
-        st.markdown(
-            "1. Make sure **PostgreSQL is running**.\n"
-            "2. Check your connection settings in `.streamlit/secrets.toml` "
-            "(host, port, dbname, user, password).\n"
-            "3. See the **README** for full setup steps.\n\n"
-            f"**Technical details:** `{_err}`"
-        )
-        if st.button("Retry database connection", key="retry_db_conn", icon=":material/refresh:"):
-            st.rerun()
+    theme.log_error("Lead database unavailable", _err)
+    st.error("**The lead database is unavailable right now.** Your lists can't be shown or changed until it's "
+             "back. Please try again later.", icon=":material/error:")
+    if st.button("Try again", key="retry_db_conn", icon=":material/refresh:"):
+        st.rerun()
     st.stop()
 
 _cfg = db.get_config()
@@ -507,6 +503,7 @@ GLOBAL_SEARCH_CAT_KEY = "global_search_cat"
 # The lists that stop you contacting someone come first: they are what a search is usually for.
 SEARCH_ORDER = ("unsub", "bounce", "mql", "master")
 SEARCH_SHOW_ALL_UP_TO = 50  # this few matches fit in one table, so they open together
+DETAIL_CATEGORIES = ("master", "mql")  # categories whose records can carry a name, company and title
 
 
 def clear_global_search():
@@ -558,7 +555,7 @@ def render_global_search_results(result):
         table["Category"] = view["category_label"]
     table["Email"] = view["email"]
     table["List"] = view["list_name"]
-    if (view["category"] == "master").any():  # only Master records carry a name and company
+    if view["category"].isin(DETAIL_CATEGORIES).any():  # only Master and MQL records carry a name and company
         name = (view["first_name"].fillna("") + " " + view["last_name"].fillna("")).str.strip()
         table["Name"] = name.where(name != "", None)
         table["Company"] = view["company"]
@@ -597,7 +594,7 @@ def _search_csv(query, counts, category=None):
     })
     if category:
         out = out.drop(columns="Category")
-    if category != "master" and not (found["category"] == "master").any():
+    if category not in DETAIL_CATEGORIES and not found["category"].isin(DETAIL_CATEGORIES).any():
         out = out.drop(columns=["First Name", "Last Name", "Company", "Job Title"])
     return out.to_csv(index=False).encode("utf-8")
 
@@ -669,6 +666,93 @@ with theme.card("global_search"):
     render_global_search_results(st.session_state.get("global_email_search"))
 
 
+# ---------------------------------------------------------------------------- #
+# BACKUP — every record in every category, as one CSV (read-only)
+# ---------------------------------------------------------------------------- #
+BACKUP_KEY = "db_backup"
+
+
+BACKUP_SCOPE_KEY = "db_backup_scope"
+# The same names as the tabs below, so each choice is recognisable.
+BACKUP_SCOPE_NAMES = {"all": "All", **TAB_NAMES}
+
+
+def _backup_rows(scope):
+    return sum(COUNTS[c]["rows"] for c in (db.ALL_CATEGORIES if scope == "all" else [scope]))
+
+
+def prepare_backup(scope):
+    """Export one category (or all of them) to a file on disk and make it downloadable."""
+    previous = st.session_state.pop(BACKUP_KEY, None)
+    if previous:
+        backup.discard_download(previous["token"])
+    bar = st.progress(0.0, text="Preparing your backup…")
+
+    def progress(written, expected):
+        bar.progress(min(written / expected, 1.0), text=f"Exported {written:,} of {expected:,} records…")
+
+    try:
+        result = backup.write_backup(scope, progress=progress)
+    except backup.EmptyDatabaseError:
+        bar.empty()
+        where = "your lists have" if scope == "all" else f"{BACKUP_SCOPE_NAMES[scope]} has"
+        st.info(f"There's nothing to back up yet — {where} no records.", icon=":material/info:")
+        return
+    except Exception as e:
+        bar.empty()
+        theme.friendly_error("The backup didn't finish",
+                             "No backup file was created. Your data wasn't changed — please try again.", e)
+        return
+    bar.empty()
+    st.session_state[BACKUP_KEY] = {
+        "token": backup.register_download(result),
+        "filename": result.filename,
+        "count": result.record_count,
+        "size": result.size_bytes,
+        "path": str(result.path),
+        "mime": result.media_type,
+    }
+
+
+def render_backup_ready():
+    ready = st.session_state.get(BACKUP_KEY)
+    if not ready:
+        return
+    if backup.get_download(ready["token"]) is None:
+        st.session_state.pop(BACKUP_KEY, None)
+        st.info("Your last backup has expired. Click Download Backup to make a fresh one.", icon=":material/info:")
+        return
+    st.success(f"Backup ready: **{ready['count']:,} records** ({fmt_bytes(ready['size'])}). "
+               f"The link works for {backup.DOWNLOAD_TTL_SECONDS // 60} minutes.", icon=":material/check_circle:")
+    if backup.route_enabled():
+        st.link_button(f"Save {ready['filename']}", backup.download_url(ready["token"]),
+                       icon=":material/download:", type="primary")
+    else:
+        # Without the asgi_app.py route, Streamlit serves the file itself (from memory).
+        st.download_button(f"Save {ready['filename']}", data=lambda p=ready["path"]: Path(p).read_bytes(),
+                           file_name=ready["filename"], mime=ready["mime"], icon=":material/download:",
+                           type="primary", key="dl_backup_file", on_click="ignore")
+
+
+with theme.card("backup"):
+    theme.section_header(
+        None, "Back up your database",
+        "Download one category's saved records as a CSV, or all of them at once. "
+        "Files hold exactly the columns stored in the database. Your data isn't changed.", "cloud_download",
+    )
+    backup_scope = st.segmented_control(
+        "What to back up", list(BACKUP_SCOPE_NAMES), required=True, default="all", key=BACKUP_SCOPE_KEY,
+        format_func=lambda s: f"{BACKUP_SCOPE_NAMES[s]} ({_backup_rows(s):,})",
+    )
+    st.caption(
+        ("A ZIP with one CSV per category. " if backup_scope == "all" else "One CSV file. ")
+        + f"About {_backup_rows(backup_scope):,} records; large backups take a minute or two to prepare."
+    )
+    if st.button("Download Backup", key="db_backup_start", icon=":material/cloud_download:", type="primary"):
+        prepare_backup(backup_scope)
+    render_backup_ready()
+
+
 theme.region_header("Your saved lists", "Open a category to add files, review its lists or remove them.",
                     "folder_copy")
 tab_master, tab_mql, tab_bounce, tab_unsub = st.tabs(
@@ -717,18 +801,6 @@ with tab_master:
             else:
                 c5.metric("Available storage", "Not configured")
             c6.metric("Est. size per 1M records", fmt_bytes(stor["bytes_per_million"]) if stor and stor["bytes_per_million"] else "—")
-            c7.metric("Max upload (CSV/XLSX)", fmt_bytes(MAX_UNCOMPRESSED_UPLOAD_BYTES))
-            c8.metric("Max upload (ZIP/GZ)", fmt_bytes(MAX_COMPRESSED_UPLOAD_BYTES))
-            st.caption(
-                f"Sizes are read live from PostgreSQL (`pg_database_size` / `pg_total_relation_size`). "
-                f"A ZIP/GZ upload may expand to at most {fmt_bytes(MAX_ARCHIVE_CONTENT_BYTES)} of data. "
-                + (
-                    "Set `storage_quota_mb` under `[postgres]` in secrets.toml (or `PG_STORAGE_QUOTA_MB`) "
-                    "to your database plan's limit to see available storage."
-                    if not (stor and stor["quota_bytes"]) else ""
-                )
-            )
-            st.caption(f"Connected to {_cfg['dbname']} at {_cfg['host']}:{_cfg['port']}.")
 
     with theme.card("master_search"):
         theme.section_header(
@@ -743,8 +815,6 @@ with tab_master:
                                               key="master_search_keywords",
                                               placeholder="Type a keyword and press Enter, e.g. Real Estate")
             searched = s_go.form_submit_button("Search", type="primary", width="stretch", icon=":material/search:")
-            st.caption("Add one or more keywords. Keywords match whole words only — "
-                       "“CTO” finds “Co-founder & CTO”, not “Inspectors”.")
         if searched:
             terms = keyword_terms(search_chips)
             if not terms:
@@ -916,6 +986,79 @@ with tab_master:
 # ---------------------------------------------------------------------------- #
 LIST_VIEW_SORTS = {"Newest first": "newest", "Oldest first": "oldest", "Email A–Z": "email_asc", "Email Z–A": "email_desc"}
 LIST_VIEW_PAGE_SIZES = (25, 50, 100)
+# (label, mql_emails column): the MQL list view's columns and the Add Single Entry form's fields.
+MQL_ENTRY_FIELDS = (("First Name", "first_name"), ("Last Name", "last_name"), ("Company", "company"),
+                    ("Title", "job_title"), ("Email", "email"))
+EMAIL_RE = auth._EMAIL_RE  # the same check the sign-in form uses
+MQL_ADDED_KEY = "_mql_single_added"  # set by the Add Single Entry dialog, read before the MQL widgets
+MQL_FORM_OPEN_KEY = "_mql_single_open"  # keeps the dialog open across full reruns until it's closed
+
+
+def open_mql_form():
+    st.session_state[MQL_FORM_OPEN_KEY] = True
+
+
+def close_mql_form():
+    st.session_state.pop(MQL_FORM_OPEN_KEY, None)
+
+
+@st.dialog("Add a single MQL entry", on_dismiss=close_mql_form)
+def add_single_mql_entry():
+    """Form for one MQL record. Saved with db.add_mql_record (an email already in the list is skipped)."""
+    values = {col: st.text_input(label + (" *" if col == "email" else ""), key=f"mql_single_{col}",
+                                 placeholder="name@company.com" if col == "email" else "")
+              for label, col in MQL_ENTRY_FIELDS}
+    try:
+        names = db.get_email_lists("mql")["name"].tolist()
+    except Exception as e:
+        names = []
+        st.warning(f"Couldn't load your MQL lists ({e}). You can still create a new one.")
+    target = (pick_target_list(names, "mql_single_target") or "").strip()
+    st.caption("\\* Required. Leave the other fields blank if you don't have them.")
+
+    save, cancel = st.columns(2)
+    if cancel.button("Cancel", key="mql_single_cancel", width="stretch"):
+        close_mql_form()
+        st.rerun()
+    if not save.button("Add entry", key="mql_single_save", type="primary", width="stretch", icon=":material/add:"):
+        return
+    email = db.normalize_email(values["email"])
+    if not email:
+        st.error("Enter an email address.", icon=":material/error:")
+        return
+    if not EMAIL_RE.match(email):
+        st.error("That email address doesn't look right. Use the form name@company.com.", icon=":material/error:")
+        return
+    if not target:
+        st.error("Enter a name for the new list, or pick an existing list.", icon=":material/error:")
+        return
+    try:
+        list_id = db.get_or_create_email_list("mql", target)
+        user = auth.current_user() or {}
+        added = db.add_mql_record(list_id, {**values, "email": email}, uploaded_by=user.get("email"), list_name=target)
+    except Exception as e:
+        theme.friendly_error("Couldn't add this entry", "The entry wasn't saved. Please try again.", e)
+        return
+    if not added:
+        st.error(f"**{email}** is already in the list “{target}”. The saved entry wasn't changed.",
+                 icon=":material/error:")
+        return
+    st.session_state[MQL_ADDED_KEY] = {"email": email, "list": target}
+    close_mql_form()
+    st.rerun()
+
+
+def show_added_mql_entry():
+    """After Add Single Entry: open the List view on the newest records, so the new entry shows first.
+    Runs before the MQL widgets are created, so their values can still be set."""
+    added = st.session_state.pop(MQL_ADDED_KEY, None)
+    if not added:
+        return
+    st.session_state.update({"mql_view": MQL_VIEWS[1], "mql_list_search": "", "mql_list_lists": [],
+                             "mql_list_sort": "Newest first", "mql_list_page": 1})
+    for _, col in MQL_ENTRY_FIELDS:
+        st.session_state.pop(f"mql_single_{col}", None)  # the next entry starts from an empty form
+    st.toast(f"Added {added['email']} to “{added['list']}”.", icon=":material/check_circle:")
 
 
 def render_record_list(category: str):
@@ -968,11 +1111,11 @@ def render_record_list(category: str):
                 theme.empty_state("inbox", f"No {label} records yet", "Switch to Standard view to add a file.")
             return
 
-        st.dataframe(
-            pd.DataFrame({"Email": rows["email"], "List": rows["list_name"],
-                          "Added": rows["created_at"].map(fmt_datetime)}),
-            width="stretch", hide_index=True,
-        )
+        table = {}
+        if category == "mql":  # MQL entries carry contact details, in the Add Single Entry form's order
+            table = {label: rows[col] for label, col in MQL_ENTRY_FIELDS if col != "email"}
+        table.update({"Email": rows["email"], "List": rows["list_name"], "Added": rows["created_at"].map(fmt_datetime)})
+        st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
         info, prev_col, next_col = st.columns([4, 1, 1], vertical_alignment="center")
         start = (page - 1) * size + 1
         info.caption(f"Showing {start:,}–{start + len(rows) - 1:,} of {total:,} records · page {page:,} of {pages:,}")
@@ -1003,7 +1146,9 @@ def render_email_category(category: str, list_view: bool = False):
     with theme.card(f"{category}_add"):
         theme.section_header(
             None, f"Add to {label}",
-            "Upload files with an email column — LeadFlow finds it automatically. Emails already saved are skipped.",
+            "Upload files with an email column — LeadFlow finds it automatically. "
+            + ("Names, company and job title are saved too when your file has them. " if category == "mql" else "")
+            + "Emails already saved are skipped.",
             "upload_file",
         )
 
@@ -1050,15 +1195,19 @@ def render_email_category(category: str, list_view: bool = False):
                             with st.spinner(f"Reading {f.name}…"):
                                 fdf = load_file(f)
                             rows_in_file = len(fdf)
-                            emails = extract_emails_from_file(fdf)
-                            if emails is None or emails.empty:
+                            # MQL keeps name, company and title too when the file has them.
+                            emails = extract_mql_records(fdf) if category == "mql" else extract_emails_from_file(fdf)
+                            if emails is None or len(emails) == 0:
                                 skipped_files.append(f.name)
                                 forget_file(f)
                                 continue
                             with st.spinner(f"Saving {len(emails):,} emails from {f.name}…"):
                                 # Logged in upload_history in the same transaction, so it can be reverted.
-                                written = db.upsert_emails(category, list_id, emails.tolist(),
-                                                           upload=upload_meta(f, rows_in_file, clean_name))
+                                meta = upload_meta(f, rows_in_file, clean_name)
+                                if category == "mql":
+                                    written = db.upsert_mql_records(list_id, emails, upload=meta)
+                                else:
+                                    written = db.upsert_emails(category, list_id, emails.tolist(), upload=meta)
                             written_total += written
                             del fdf, emails
                             forget_file(f)
@@ -1112,9 +1261,15 @@ def render_email_category(category: str, list_view: bool = False):
 
 
 with tab_mql:
+    show_added_mql_entry()
     st.session_state.setdefault("mql_view", MQL_VIEWS[0])
-    mql_view = st.segmented_control("MQL view", MQL_VIEWS, required=True, key="mql_view",
-                                    label_visibility="collapsed")
+    view_col, add_col = st.columns([4, 1], vertical_alignment="center")
+    mql_view = view_col.segmented_control("MQL view", MQL_VIEWS, required=True, key="mql_view",
+                                          label_visibility="collapsed")
+    add_col.button("Add Single Entry", key="mql_single_open", icon=":material/person_add:", width="stretch",
+                   help="Add one MQL record by hand: name, company, title and email.", on_click=open_mql_form)
+    if st.session_state.get(MQL_FORM_OPEN_KEY):
+        add_single_mql_entry()
     render_email_category("mql", list_view=mql_view == MQL_VIEWS[1])
 
 with tab_bounce:

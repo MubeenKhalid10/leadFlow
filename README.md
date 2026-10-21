@@ -106,8 +106,12 @@ You can also override any value with environment variables: `PGHOST`, `PGPORT`,
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run asgi_app.py
 ```
+
+`asgi_app.py` runs `app.py` plus the route that streams **Download Backup** files
+(Database page) from disk. `streamlit run app.py` still works, but then backups are
+served through Streamlit, which holds the whole file in memory.
 
 The tables (`master_lists`, `master_contacts`, `bounce_lists`, `bounce_emails`)
 are created automatically on first run.

@@ -52,6 +52,28 @@ def test_database_page_blocks_non_admins():
 
 
 # --------------------------------------------------------------------------- #
+# Database unavailable: a plain message for users, the cause in the server log
+# --------------------------------------------------------------------------- #
+DB_DOWN = "password authentication failed for user postgres"
+
+
+@pytest.mark.parametrize("page", [DB_PAGE, CLEAN_PAGE])
+def test_unavailable_database_shows_a_plain_message(page, monkeypatch, caplog):
+    monkeypatch.setattr(db, "init_db", lambda: (False, DB_DOWN))
+    at = AppTest.from_file(page, default_timeout=TIMEOUT)
+    at.session_state["_auth_user"] = dict(ADMIN)
+    at.session_state["_auth_restore_attempted"] = True
+    at = _run(at)
+
+    assert any("The lead database is unavailable right now" in str(e.value) for e in at.error)
+    shown = _texts(at) + " ".join(str(e.value) for e in at.error) + " ".join(str(x.label) for x in at.expander)
+    for technical in (DB_DOWN, "PostgreSQL", "secrets.toml", "README", "Technical details"):
+        assert technical not in shown
+    assert _button(at, "retry_db_conn").label == "Try again"
+    assert DB_DOWN in caplog.text  # the cause is still logged for whoever fixes it
+
+
+# --------------------------------------------------------------------------- #
 # Global email search
 # --------------------------------------------------------------------------- #
 @pytest.fixture
@@ -142,6 +164,9 @@ def test_global_search_error_is_reported(seeded, monkeypatch):
 # --------------------------------------------------------------------------- #
 # MQL Standard / List view
 # --------------------------------------------------------------------------- #
+MQL_LIST_COLUMNS = ["First Name", "Last Name", "Company", "Title", "Email", "List", "Added"]
+
+
 def test_mql_view_switching_and_paging():
     db.store_records("mql", "Webinar", [{"email": f"lead{i:02d}@acme.com"} for i in range(60)])
     at = _db_page()
@@ -151,7 +176,7 @@ def test_mql_view_switching_and_paging():
     at.segmented_control(key="mql_view").set_value("List view")
     at = _run(at)
     assert not [b for b in at.button if b.key == "save_import_mql"]
-    records = next(d.value for d in at.dataframe if list(d.value.columns) == ["Email", "List", "Added"])
+    records = next(d.value for d in at.dataframe if list(d.value.columns) == MQL_LIST_COLUMNS)
     assert len(records) == 50 and set(records["List"]) == {"Webinar"}
     assert "Showing 1–50 of 60 records" in _texts(at)
 

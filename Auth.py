@@ -222,7 +222,8 @@ def _queue_cookie(value: dict | None) -> None:
     st.session_state["_auth_cookie_pending"] = value if value else "clear"
 
 
-def _flush_cookie() -> None:
+def _flush_cookie(reload: bool = False) -> None:
+    """Perform a queued cookie write. `reload` then reloads the page, once the cookie is set."""
     pending = st.session_state.pop("_auth_cookie_pending", None)
     if pending is None:
         return
@@ -234,6 +235,8 @@ def _flush_cookie() -> None:
             f"parent.document.cookie = '{_COOKIE_NAME}={val}; Max-Age={_COOKIE_MAX_AGE}; "
             "Path=/; SameSite=Lax' + (parent.location.protocol === 'https:' ? '; Secure' : '');"
         )
+    if reload:
+        js += " parent.location.reload();"
     components.html(f"<script>{js}</script>", height=0, width=0)
 
 
@@ -619,7 +622,10 @@ def _render_login_form():
         unsafe_allow_html=True,
     )
 
-    with st.container(key="lf_auth_shell"):
+    # The panel sits in a placeholder so a successful sign-in can replace it at once.
+    shell = st.empty()
+    signed_in = False
+    with shell.container(key="lf_auth_shell"):
         panel, form_side = st.columns([0.92, 1.08], gap=None)
         panel.markdown(_AUTH_PANEL_HTML, unsafe_allow_html=True)
 
@@ -675,8 +681,17 @@ def _render_login_form():
                                   "Open it, then choose <b>Sign in</b> above.")
                 st.stop()
             _complete_login(client, res.session, res.user)
-            st.rerun()
+            signed_in = True
 
+    if signed_in:
+        # Load the app with a fresh page, as a refresh would: save the sign-in cookie, then
+        # reload, and the cookie signs the new page in. A plain st.rerun() let Streamlit reuse
+        # the login panel's containers for the app, so the faded login form stayed on screen
+        # above it until the next refresh. If the reload doesn't happen, this session is
+        # still signed in and the next interaction shows the app.
+        with shell:
+            theme.status_line("info", "Signed in", "Loading LeadFlow…")
+        _flush_cookie(reload=True)
     st.stop()
 
 

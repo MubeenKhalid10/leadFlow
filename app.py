@@ -68,10 +68,14 @@ auth.render_user_badge()
 # database + tables on first use; surface problems as a friendly banner instead
 # of crashing, so cleaning can still run (with suppression skipped) if the DB is
 # unavailable.
-if not st.session_state.get("_db_ready"):
+# Checked once per session: an unreachable database otherwise cost a connect timeout on
+# every click. The banner's Retry button clears "_db_ready" to check again.
+if "_db_ready" not in st.session_state:
     _db_ok, _db_err = db.init_db()
     st.session_state["_db_ready"] = _db_ok
     st.session_state["_db_error"] = None if _db_ok else _db_err
+    if not _db_ok:
+        theme.log_error("Lead database unavailable", _db_err)
 
 
 def db_is_ready():
@@ -79,25 +83,17 @@ def db_is_ready():
 
 
 def render_db_error_banner():
-    err = st.session_state.get("_db_error") or "Unknown error"
+    # The cause is in the server log (logged when the check failed); users get a plain message.
     st.error(
-        "**The lead database isn't connected.** You can still clean files, but your saved "
+        "**The lead database is unavailable right now.** You can still clean files, but your saved "
         "lists (Master, Bounced, MQL, Unsubscribed) can't be excluded and results can't be "
-        "saved until it's back.",
+        "saved until it's back. Please try again later.",
         icon=":material/error:",
     )
-    with st.expander("How to fix this (for your administrator)", expanded=False):
-        st.markdown(
-            "1. Make sure **PostgreSQL is running**.\n"
-            "2. Check your connection settings in `.streamlit/secrets.toml` "
-            "(host, port, dbname, user, password).\n"
-            "3. See the **README** for full setup steps.\n\n"
-            f"**Technical details:** `{err}`"
-        )
-        if st.button("Retry database connection", key="retry_db_conn", icon=":material/refresh:"):
-            st.session_state.pop("_db_ready", None)
-            st.session_state.pop("_db_error", None)
-            st.rerun()
+    if st.button("Try again", key="retry_db_conn", icon=":material/refresh:"):
+        st.session_state.pop("_db_ready", None)
+        st.session_state.pop("_db_error", None)
+        st.rerun()
 
 
 def cleaned_df_to_records(df):
@@ -1032,7 +1028,7 @@ if df is not None:
                 except Exception as e:
                     _cat_lists = {}
                     st.warning("Couldn't load your saved lists, so they can't be excluded this time. Try refreshing the page.")
-                    st.caption(f"Technical details: {type(e).__name__}: {e}")
+                    theme.log_error("Couldn't load saved lists", e)
 
                 def _category_picker(cat, label, help_text, count_col):
                     """Checkbox for one category; when ticked, a multiselect of its lists (all by default)."""
@@ -1982,7 +1978,7 @@ if df is not None:
                     existing_master = existing_lists = pd.DataFrame()
                     existing_names = []
                     st.warning(f"Couldn't load your {save_label} lists. You can still create a new one.")
-                    st.caption(f"Technical details: {type(e).__name__}: {e}")
+                    theme.log_error(f"Couldn't load {save_label} lists", e)
 
                 new_list_label = "+ Create a new list…"
                 save_choice = st.selectbox(
@@ -2063,7 +2059,7 @@ if df is not None:
                         )
                 except Exception as e:
                     st.warning("Couldn't check which leads are already saved. Saving will still skip duplicates.")
-                    st.caption(f"Technical details: {type(e).__name__}: {e}")
+                    theme.log_error("Couldn't check which leads are already saved", e)
                     new_count = len(final_df)
                     new_mask = pd.Series([True] * len(final_df), index=final_df.index)
 

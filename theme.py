@@ -311,12 +311,16 @@ def subcard(key):
     return st.container(key=f"lf_subcard_{key}")
 
 
+def log_error(title, error):
+    """Send a raw error to the server log (with its traceback) instead of showing it to the user."""
+    _log.error("%s: %s", title, error, exc_info=error if isinstance(error, BaseException) else None)
+
+
 def friendly_error(title, message, error=None):
-    """Plain-language error with a next step; the raw error goes to the log and a small caption."""
+    """Plain-language error with a next step; the raw error goes to the server log only."""
     st.error(f"**{title}**  \n{message}", icon=":material/error:")
     if error is not None:
-        _log.error("%s: %s", title, error, exc_info=error if isinstance(error, BaseException) else None)
-        st.caption(f"Technical details: {type(error).__name__}: {html.escape(str(error))[:500]}")
+        log_error(title, error)
 
 
 def inject_theme():
@@ -1362,13 +1366,13 @@ def inject_theme():
         }
 
         /* ---------------------------------------------------------------
-           TABS: text on a ruled line; the selected one takes a 2px navy bar
-           underneath and heavier, darker text, so it never depends on colour
-           alone. No fill: a filled navy box would read as a primary button.
+           TABS: each tab is its own outlined box; the selected one takes a
+           2px navy border, a soft tint and heavier, darker text, so it never
+           depends on colour alone. Only a soft tint: a filled navy box would
+           read as a primary button.
            --------------------------------------------------------------- */
         [data-testid="stTabs"] [role="tablist"] {
-            gap: 1.75rem;
-            border-bottom: 1px solid var(--lf-border);
+            gap: 0.5rem;
             flex-wrap: wrap;
             padding-bottom: 0;
             margin-bottom: 1rem;
@@ -1382,32 +1386,31 @@ def inject_theme():
         }
 
         [data-testid="stTabs"] [role="tab"] {
-            border: none;
-            border-bottom: 2px solid transparent;
-            border-radius: 0;
-            background: none;
-            /* The bar sits on the tablist rule rather than above it. */
-            margin-bottom: -1px;
-            padding: 0.6rem 0.15rem 0.5rem;
+            border: 1px solid var(--lf-border);
+            border-radius: var(--lf-radius);
+            background: var(--lf-surface);
+            padding: 0.5rem 0.9rem;
             font-weight: 500;
             font-size: 0.95rem;
             color: var(--lf-body);
-            transition: color 0.15s ease, border-color 0.15s ease;
+            transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
         }
 
         [data-testid="stTabs"] [role="tab"] * { color: inherit !important; }
 
         [data-testid="stTabs"] [role="tab"]:hover {
             color: var(--lf-title);
-            background: none;
-            border-bottom-color: var(--lf-input-border);
+            background: var(--lf-mist);
+            border-color: var(--lf-input-border);
         }
 
+        /* The inset ring makes the border read as 2px without moving the label. */
         [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
             color: var(--lf-title) !important;
             font-weight: 700;
-            background: none;
-            border-bottom-color: var(--lf-primary);
+            background: var(--lf-primary-soft);
+            border-color: var(--lf-primary);
+            box-shadow: inset 0 0 0 1px var(--lf-primary);
         }
 
         [data-testid="stTabs"] [role="tab"]:focus-visible {
@@ -1580,6 +1583,20 @@ def inject_theme():
             pointer-events: none !important;
         }
 
+        /* One loading indicator at a time: while a step shows its own progress (st.spinner,
+           or the running icon of st.status), the centred overlay spinner stays hidden. The
+           toolbar's own "Running…" widget is hidden too; the overlay already says it. */
+        [data-testid="stApp"][data-test-script-state="running"]:has(
+            [data-testid="stSpinner"],
+            [data-testid="stExpanderIconSpinner"]
+        )::after {
+            display: none;
+        }
+
+        [data-testid="stStatusWidget"] {
+            display: none !important;
+        }
+
         [data-testid="stApp"][data-test-script-state="running"] button,
         [data-testid="stApp"][data-test-script-state="running"] input,
         [data-testid="stApp"][data-test-script-state="running"] select,
@@ -1597,7 +1614,10 @@ def inject_theme():
             transition: opacity 0.2s ease-in-out;
         }
 
+        /* Full width, so a progress line sits flush with the boxes above and below it. */
         [data-testid="stSpinner"] {
+            width: 100%;
+            box-sizing: border-box;
             padding: 0.6rem 0.9rem;
             background: var(--lf-mist);
             border: 1px solid var(--lf-border);
@@ -1765,9 +1785,9 @@ def inject_theme():
             .lf-stepper { padding: 0.7rem 0.8rem; }
             [data-testid="stAppViewContainer"] [data-testid="stMain"] :is(h1.lf-page-title, h2.lf-region-title) { font-size: 1.45rem; }
             [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.1rem; }
-            /* Tabs stay on one line and scroll sideways rather than wrapping under the rule. */
+            /* Tabs stay on one line and scroll sideways rather than wrapping into a second row. */
             [data-testid="stTabs"] [role="tablist"] {
-                gap: 1.25rem;
+                gap: 0.4rem;
                 flex-wrap: nowrap;
                 overflow-x: auto;
                 scrollbar-width: none;

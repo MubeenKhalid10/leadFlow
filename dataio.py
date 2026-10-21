@@ -301,3 +301,30 @@ def extract_emails_from_file(df):
     if email_col and email_col in df.columns:
         return df[email_col].dropna().astype(str)
     return pd.Series([], dtype=str)
+
+
+# Fields an MQL import keeps: standard column -> mql_emails column.
+MQL_FILE_FIELDS = {"First Name": "first_name", "Last Name": "last_name", "Company": "company",
+                   "Job Title": "job_title", "Email": "email"}
+
+
+def extract_mql_records(df):
+    """MQL records from an uploaded file: the email plus whichever of first/last name, company and
+    job title the file has (keys as in MQL_FILE_FIELDS). A single name column is split into first
+    and last name, as the cleaning page does. Rows without an email are dropped.
+
+    Returns None if no Email column can be detected.
+    """
+    mapping = auto_map_columns(df)
+    if "Email" not in mapping:
+        return None
+    columns = {key: df[mapping[std]].astype(object) for std, key in MQL_FILE_FIELDS.items() if std in mapping}
+    if "first_name" not in columns and "Full Name" in mapping:
+        parts = df[mapping["Full Name"]].astype(str).str.strip().str.split(" ", n=1, expand=True)
+        columns["first_name"] = parts[0]
+        if "last_name" not in columns and parts.shape[1] > 1:
+            columns["last_name"] = parts[1]
+    keys = list(columns)
+    values = [s.astype(object).where(s.notna(), None) for s in columns.values()]  # missing cells -> None
+    records = (dict(zip(keys, row)) for row in zip(*values))
+    return [r for r in records if str(r["email"]).strip().lower() not in ("", "nan", "none", "null")]

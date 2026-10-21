@@ -14,7 +14,8 @@ master_contacts   (id, list_id -> master_lists, email, first_name, last_name,
                    company, job_title, industry, location, created_at)
 bounce_lists      (id, name, created_at)
 bounce_emails     (id, list_id -> bounce_lists, email, created_at)
-mql_lists / mql_emails, unsub_lists / unsub_emails   (same shape as bounce)
+mql_lists / mql_emails, unsub_lists / unsub_emails   (same shape as bounce; mql_emails also
+                   has first_name, last_name, company, job_title for entries added by hand)
 search_email_everywhere() looks an email up in all four categories at once.
 upload_history    (category, list_name, file_name, file_size_bytes, rows_in_file,
                    rows_written, rows_skipped, uploaded_by, uploaded_at)
@@ -240,8 +241,11 @@ def get_conn(dbname: str | None = None, autocommit: bool = False):
 
 
 def _fetch_df(query: str, params=None) -> pd.DataFrame:
-    """Run a SELECT and return a DataFrame (avoids the pandas+psycopg2 warning)."""
-    with get_conn() as conn:
+    """Run a SELECT and return a DataFrame (avoids the pandas+psycopg2 warning).
+
+    Autocommit: a read needs no transaction, and skipping it saves the COMMIT round trip.
+    """
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute(query, params or ())
         cols = [d[0] for d in cur.description]
@@ -393,6 +397,7 @@ _UPLOAD_HISTORY_COLUMNS = {
     "link_checked": "BOOLEAN",   # NULL = logged before merge tracking; not yet matched
 }
 _MERGE_TRACKING_READY = False
+_SCHEMA_READY_KEY: tuple | None = None  # connection settings the schema was last ensured for
 _PAST_MERGE_WINDOW = pd.Timedelta(hours=6)
 
 
@@ -410,6 +415,25 @@ def _ensure_merge_tracking(cur) -> None:
     cur.execute("SELECT 1 FROM upload_history WHERE link_checked IS NULL LIMIT 1")
     if cur.fetchone():
         _link_past_merges(cur)
+
+
+# Contact details an MQL entry can carry (same names as master_contacts). Added to existing
+# databases by _ensure_mql_details() rather than in SCHEMA_DDL, so the column order is the
+# same on new and upgraded databases. Nullable: emails imported from files have none.
+MQL_DETAIL_COLUMNS = ("first_name", "last_name", "company", "job_title")
+
+
+def _ensure_mql_details(cur) -> None:
+    """Add the MQL contact-detail columns if missing (catalog check first, so no table lock on
+    every start). Adding a nullable column leaves existing rows unchanged."""
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'mql_emails'"
+    )
+    have = {r[0] for r in cur.fetchall()}
+    for col in MQL_DETAIL_COLUMNS:
+        if col not in have:
+            cur.execute(f"ALTER TABLE mql_emails ADD COLUMN IF NOT EXISTS {col} TEXT")
 
 
 def _link_past_merges(cur) -> None:
@@ -474,8 +498,15 @@ def _link_past_merges(cur) -> None:
 
 
 def init_db() -> tuple[bool, str | None]:
-    """Ensure the database and all tables exist. Returns (ok, error_message)."""
-    global _MERGE_TRACKING_READY
+    """Ensure the database and all tables exist. Returns (ok, error_message).
+
+    Runs the DDL once per process (per connection settings): pages call this on every
+    rerun, and repeating it cost a schema round trip plus a COMMIT on each click.
+    """
+    global _MERGE_TRACKING_READY, _SCHEMA_READY_KEY
+    key = tuple(sorted(_conn_kwargs().items()))
+    if _SCHEMA_READY_KEY == key:
+        return True, None
     ok, err = ensure_database()
     if not ok:
         return False, err
@@ -483,9 +514,11 @@ def init_db() -> tuple[bool, str | None]:
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute(SCHEMA_DDL)
+            _ensure_mql_details(cur)
             if not _MERGE_TRACKING_READY:
                 _ensure_merge_tracking(cur)
         _MERGE_TRACKING_READY = True
+        _SCHEMA_READY_KEY = key
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -494,7 +527,7 @@ def init_db() -> tuple[bool, str | None]:
 def check_connection() -> tuple[bool, str | None]:
     """Lightweight connectivity probe used by the UI."""
     try:
-        with get_conn() as conn:
+        with get_conn(autocommit=True) as conn:
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
@@ -666,7 +699,7 @@ def get_master_emails(list_ids: list[int]) -> set:
     """Return the set of normalised emails across the given master lists."""
     if not list_ids:
         return set()
-    with get_conn() as conn:
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute(
             "SELECT email FROM master_contacts WHERE list_id = ANY(%s)",
@@ -682,7 +715,7 @@ def get_all_master_emails() -> set:
     Use this before saving new contacts to ensure no email is stored twice
     anywhere in the master database — regardless of which list it belongs to.
     """
-    with get_conn() as conn:
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute("SELECT email FROM master_contacts")
         return {r[0] for r in cur.fetchall()}
@@ -824,7 +857,7 @@ def get_global_master_stats() -> dict:
     Returns a dict with keys: total_lists, total_contacts, unique_emails.
     'unique_emails' counts distinct email values (ignoring list_id).
     """
-    with get_conn() as conn:
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -998,12 +1031,82 @@ def upsert_emails(category: str, list_id: int, emails, upload: dict | None = Non
     return inserted
 
 
+def upsert_mql_records(list_id: int, records, upload: dict | None = None) -> int:
+    """Insert MQL records into a list, keeping their contact details (keys: email + MQL_DETAIL_COLUMNS;
+    missing or blank details are stored as NULL).
+
+    Same rules as upsert_emails: blank emails are skipped, the first record wins when an email
+    repeats, and an email already in the list is skipped with its saved entry left unchanged.
+    Returns the number of rows inserted; `upload` is logged in upload_history as there.
+    """
+    seen = set()
+    rows = []
+    for rec in records:
+        email = normalize_email(rec.get("email"))
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        rows.append((list_id, email, *(_clean_field(rec.get(c)) for c in MQL_DETAIL_COLUMNS)))
+    if not rows:
+        if upload:
+            rows_in_file = upload.get("rows_in_file", 0)
+            record_upload("mql", upload["file_name"], rows_in_file, 0, max(rows_in_file, 0),
+                          upload.get("list_name"), upload.get("file_size_bytes"), upload.get("uploaded_by"),
+                          list_id=list_id)
+        return 0
+
+    cols = ", ".join(MQL_DETAIL_COLUMNS)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TEMP TABLE _lf_mql_in (ord BIGINT, list_id INTEGER, email TEXT, "
+                    + ", ".join(f"{c} TEXT" for c in MQL_DETAIL_COLUMNS) + ") ON COMMIT DROP")
+        _copy_rows(cur, "_lf_mql_in", ((i, *r) for i, r in enumerate(rows)))
+        cur.execute(
+            f"INSERT INTO mql_emails (list_id, email, {cols}) "
+            f"SELECT list_id, email, {cols} FROM _lf_mql_in ORDER BY ord "
+            "ON CONFLICT (list_id, email) DO NOTHING"
+        )
+        inserted = cur.rowcount
+        if upload:
+            rows_in_file = upload.get("rows_in_file", 0)
+            _log_merge(cur, "mql", list_id, upload, inserted, max(rows_in_file - inserted, 0))
+    return inserted
+
+
+SINGLE_ENTRY_FILE_NAME = "Single entry (added by hand)"
+
+
+def add_mql_record(list_id: int, record: dict, uploaded_by: str | None = None, list_name: str | None = None) -> bool:
+    """Add one MQL entry with its contact details (keys: email + MQL_DETAIL_COLUMNS).
+
+    Same rule as a file import: an email already in the list is skipped, and the existing
+    entry is left unchanged. Returns True if the entry was added. Logged in upload_history
+    (as SINGLE_ENTRY_FILE_NAME) in the same transaction, so it can be undone like an import.
+    """
+    email = normalize_email(record.get("email"))
+    if not email:
+        raise ValueError("An email address is required.")
+    details = [_clean_field(record.get(c)) for c in MQL_DETAIL_COLUMNS]
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"INSERT INTO mql_emails (list_id, email, {', '.join(MQL_DETAIL_COLUMNS)}) "
+            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (list_id, email) DO NOTHING",
+            (list_id, email, *details),
+        )
+        inserted = cur.rowcount
+        _log_merge(cur, "mql", list_id, {"file_name": SINGLE_ENTRY_FILE_NAME, "rows_in_file": 1,
+                                         "list_name": list_name, "uploaded_by": uploaded_by},
+                   inserted, 1 - inserted)
+    return inserted == 1
+
+
 @_cached(ttl=600, resource=True)
 def get_category_emails(category: str, list_ids: list[int]) -> set:
     _, emails_t = _tables(category)
     if not list_ids:
         return set()
-    with get_conn() as conn:
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute(
             f"SELECT email FROM {emails_t} WHERE list_id = ANY(%s)",
@@ -1056,8 +1159,10 @@ def get_email_records(
     """One page of an email-only category's records (one row per list entry) for the list view.
 
     `search` matches part of the email, case-insensitively; `list_ids` narrows to those lists.
-    Returns (rows, total matching rows). Columns: id, email, list_id, list_name, created_at.
+    Returns (rows, total matching rows). Columns: id, email, list_id, list_name, created_at,
+    plus MQL_DETAIL_COLUMNS for MQL.
     """
+    details = "".join(f", e.{c}" for c in MQL_DETAIL_COLUMNS) if category == "mql" else ""
     lists_t, emails_t = _tables(category)
     if sort not in EMAIL_RECORD_SORTS:
         raise ValueError(f"Unknown sort: {sort!r}")
@@ -1072,7 +1177,7 @@ def get_email_records(
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     df = _fetch_df(
         f"""
-        SELECT e.id, e.email, e.list_id, l.name AS list_name, e.created_at,
+        SELECT e.id, e.email, e.list_id, l.name AS list_name, e.created_at{details},
                COUNT(*) OVER () AS total
         FROM {emails_t} e JOIN {lists_t} l ON l.id = e.list_id
         {where_sql}
@@ -1121,9 +1226,11 @@ def search_email_everywhere(query: str, limit_per_category: int = 200) -> tuple[
     params: list = [pattern, exact, lim]
     for cat in ("mql", "unsub", "bounce"):
         lists_t, emails_t = _tables(cat)
+        # MQL entries can carry contact details; the other email lists have none.
+        details = ", ".join(f"e.{c}" if cat == "mql" else "NULL::text" for c in MQL_DETAIL_COLUMNS)
         arms.append(
             f"(SELECT '{cat}' AS category, e.email, e.list_id, l.name AS list_name, e.created_at, "
-            "NULL::text, NULL::text, NULL::text, NULL::text, COUNT(*) OVER () AS total "
+            f"{details}, COUNT(*) OVER () AS total "
             f"FROM {emails_t} e JOIN {lists_t} l ON l.id = e.list_id WHERE e.email ILIKE %s "
             "ORDER BY (e.email = %s) DESC, e.email, e.id LIMIT %s)"
         )
@@ -1194,26 +1301,29 @@ def rename_bounce_list(list_id: int, new_name: str) -> None:
 def store_records(category: str, list_name: str, records: list[dict], upload: dict | None = None) -> tuple[int, int]:
     """Save contact records into a named list of any category, creating the list if needed.
 
-    Master keeps the full record (upsert_master_contacts); MQL / Unsub / Bounce keep only the
-    email (upsert_emails), with the same per-list de-duplication as a file import. `upload` is
-    logged in upload_history as with those functions. Returns (list_id, rows written).
+    Master keeps the full record (upsert_master_contacts); MQL keeps the email plus name, company
+    and title (upsert_mql_records); Unsub / Bounce keep only the email (upsert_emails); all with
+    the same per-list de-duplication as a file import. `upload` is logged in upload_history as
+    with those functions. Returns (list_id, rows written).
     """
     if category == "master":
         list_id = get_or_create_master_list(list_name)
         return list_id, upsert_master_contacts(list_id, records, upload=upload)
     list_id = get_or_create_email_list(category, list_name)
+    if category == "mql":
+        return list_id, upsert_mql_records(list_id, records, upload=upload)
     return list_id, upsert_emails(category, list_id, [r.get("email") for r in records], upload=upload)
 
 
 # --------------------------------------------------------------------------- #
 # Live counts, storage statistics and upload history
 # --------------------------------------------------------------------------- #
-@_cached(ttl=30)
+@_cached(ttl=300)
 def get_category_counts() -> dict:
     """Exact per-category record counts straight from the database.
 
-    Returns {category: {"lists": n, "rows": n, "unique": n}}. Cached for only
-    30 s and cleared by every write, so the numbers always follow the database.
+    Returns {category: {"lists": n, "rows": n, "unique": n}}. Cached for 5
+    minutes and cleared by every write, so the numbers always follow the database.
     """
     parts = [
         "(SELECT COUNT(*) FROM master_lists)",
@@ -1227,7 +1337,7 @@ def get_category_counts() -> dict:
             f"(SELECT COUNT(*) FROM {emails_t})",
             f"(SELECT COUNT(DISTINCT email) FROM {emails_t})",
         ]
-    with get_conn() as conn:
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute("SELECT " + ", ".join(parts))
         row = [int(v) for v in cur.fetchone()]
@@ -1251,10 +1361,10 @@ def get_storage_quota_mb() -> int | None:
         return None
 
 
-@_cached(ttl=30)
+@_cached(ttl=300)
 def get_storage_info() -> dict:
     """Actual on-disk sizes reported by PostgreSQL (bytes) plus the Master row count."""
-    with get_conn() as conn:
+    with get_conn(autocommit=True) as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -1312,7 +1422,7 @@ def record_upload(
         )
 
 
-@_cached(ttl=30)
+@_cached(ttl=300)
 def get_upload_history(category: str | None = None, limit: int = 200) -> pd.DataFrame:
     """Upload log, newest first. Pass a category to filter."""
     query = (
@@ -1329,7 +1439,7 @@ def get_upload_history(category: str | None = None, limit: int = 200) -> pd.Data
     return _fetch_df(query, tuple(params))
 
 
-@_cached(ttl=30)
+@_cached(ttl=300)
 def get_list_merges(category: str, list_id: int, limit: int = 500) -> pd.DataFrame:
     """Merges into one list, newest first (from upload_history)."""
     return _fetch_df(
@@ -1340,7 +1450,7 @@ def get_list_merges(category: str, list_id: int, limit: int = 500) -> pd.DataFra
     )
 
 
-@_cached(ttl=30)
+@_cached(ttl=300)
 def get_merge_counts(category: str) -> dict:
     """{list_id: number of merges into it that haven't been reverted}."""
     df = _fetch_df(
@@ -1422,6 +1532,8 @@ delete_master_list = _invalidating(delete_master_list)
 rename_master_list = _invalidating(rename_master_list)
 get_or_create_email_list = _invalidating(get_or_create_email_list)
 upsert_emails = _invalidating(upsert_emails)
+add_mql_record = _invalidating(add_mql_record)
+upsert_mql_records = _invalidating(upsert_mql_records)
 delete_email_list = _invalidating(delete_email_list)
 rename_email_list = _invalidating(rename_email_list)
 record_upload = _invalidating(record_upload)
