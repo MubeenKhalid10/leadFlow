@@ -11,6 +11,9 @@ against. Four categories, one tab each:
   * MQL / Bounce / Unsub — email-only lists. Every upload is logged with file
     name, record count and date/time (upload history).
 
+A search box above the tabs finds an email in all four categories at once, and the
+MQL tab can switch to a paged List view of its records.
+
 All counts shown here are queried live from PostgreSQL (see db.py).
 """
 
@@ -34,6 +37,7 @@ from dataio import (
     keyword_regex,
     keyword_terms,
     load_file,
+    safe_filename,
     validate_upload,
 )
 st.set_page_config(
@@ -478,13 +482,198 @@ def _tab_label(label, cat):
     return f"{label} ({COUNTS[cat]['unique']:,})"
 
 
+TAB_NAMES = {"master": "Master leads", "mql": "MQL", "bounce": "Bounced", "unsub": "Unsubscribed"}
+TAB_LABELS = {cat: _tab_label(name, cat) for cat, name in TAB_NAMES.items()}
+DB_TAB_KEY = "db_tab"
+MQL_VIEWS = ("Standard view", "List view")
+
+# Tab labels carry live counts, so a remembered tab can name an old count after an import.
+# Point it at the same category's current label instead of falling back to the first tab.
+_remembered_tab = st.session_state.get(DB_TAB_KEY)
+if _remembered_tab and _remembered_tab not in TAB_LABELS.values():
+    for _cat, _name in TAB_NAMES.items():
+        if str(_remembered_tab).startswith(f"{_name} ("):
+            st.session_state[DB_TAB_KEY] = TAB_LABELS[_cat]
+            break
+
+
+# ---------------------------------------------------------------------------- #
+# GLOBAL EMAIL SEARCH — every category at once, whichever tab is open
+# ---------------------------------------------------------------------------- #
+GLOBAL_SEARCH_LIMIT = 200  # rows shown per category
+
+
+GLOBAL_SEARCH_CAT_KEY = "global_search_cat"
+# The lists that stop you contacting someone come first: they are what a search is usually for.
+SEARCH_ORDER = ("unsub", "bounce", "mql", "master")
+SEARCH_SHOW_ALL_UP_TO = 50  # this few matches fit in one table, so they open together
+
+
+def clear_global_search():
+    """Button callback: empty the search box and forget the results."""
+    st.session_state["global_email_query"] = ""
+    st.session_state.pop("global_email_search", None)
+    st.session_state.pop(GLOBAL_SEARCH_CAT_KEY, None)
+
+
+def _added_date(ts):
+    """Day a record was saved, in the viewer's time zone, as a real date so the column sorts by date."""
+    return None if ts is None or pd.isna(ts) else _to_local(ts).date()
+
+
+def render_global_search_results(result):
+    if not result:
+        return
+    query, found, counts = result["query"], result["df"], result["counts"]
+    if found.empty:
+        theme.empty_state("search_off", "No matching emails",
+                          f"No email containing “{html.escape(query)}” is saved in Master, MQL, Unsubscribed or Bounce.")
+        return
+    total = sum(counts.values())
+    risky = counts["bounce"] + counts["unsub"]
+    theme.status_line(
+        "warning" if risky else "info",
+        f"{total:,} {'match' if total == 1 else 'matches'} for “{html.escape(query)}”",
+        f"{risky:,} on Bounce or Unsubscribed — don't contact these." if risky
+        else "None on Bounce or Unsubscribed.",
+    )
+
+    # One category at a time, so a few Bounce matches never sit below hundreds of Master rows.
+    # A handful of matches (e.g. one exact address) is shown together under "All".
+    hit_cats = [c for c in SEARCH_ORDER if counts[c]]
+    options = (["all"] if total <= SEARCH_SHOW_ALL_UP_TO and len(hit_cats) > 1 else []) + hit_cats
+    cat = st.segmented_control(
+        "Show matches in", options, default=options[0], required=True, key=GLOBAL_SEARCH_CAT_KEY,
+        format_func=lambda c: f"All ({total:,})" if c == "all" else f"{db.CATEGORY_LABELS[c]} ({counts[c]:,})",
+    )
+    if cat == "all":
+        view = found.sort_values("category", key=lambda s: s.map(SEARCH_ORDER.index), kind="stable")
+    else:
+        view = found[found["category"] == cat]
+        if counts[cat] > len(view):
+            st.caption(f"First {len(view):,} of {counts[cat]:,} shown. Type more of the address to narrow it down.")
+
+    table = {}
+    if cat == "all":
+        table["Category"] = view["category_label"]
+    table["Email"] = view["email"]
+    table["List"] = view["list_name"]
+    if (view["category"] == "master").any():  # only Master records carry a name and company
+        name = (view["first_name"].fillna("") + " " + view["last_name"].fillna("")).str.strip()
+        table["Name"] = name.where(name != "", None)
+        table["Company"] = view["company"]
+    table["Added"] = view["created_at"].map(_added_date)
+    st.dataframe(
+        pd.DataFrame(table),
+        width="stretch", hide_index=True, height=min(35 * (len(view) + 1) + 3, 420),
+        column_config={
+            "Category": st.column_config.TextColumn("Category", width="small"),
+            "Email": st.column_config.TextColumn("Email", width="large"),
+            "List": st.column_config.TextColumn("List", width="small"),
+            "Name": st.column_config.TextColumn("Name", width="medium"),
+            "Company": st.column_config.TextColumn("Company", width="large"),
+            "Added": st.column_config.DateColumn("Added", format="D MMM YYYY", width="small"),
+        },
+    )
+    _search_downloads(query, counts)
+
+
+def _search_csv(query, counts, category=None):
+    """Every match for `query` as CSV (not just the rows shown), for one category or all of them.
+    Runs only when the download is clicked, so a broad search doesn't fetch its rows on every rerun."""
+    found, _ = db.search_email_everywhere(query, limit_per_category=max(counts.values()))
+    if category:
+        found = found[found["category"] == category]
+    found = found.sort_values("category", key=lambda s: s.map(SEARCH_ORDER.index), kind="stable")
+    out = pd.DataFrame({
+        "Category": found["category_label"],
+        "Email": found["email"],
+        "List": found["list_name"],
+        "First Name": found["first_name"],
+        "Last Name": found["last_name"],
+        "Company": found["company"],
+        "Job Title": found["job_title"],
+        "Added": found["created_at"].map(_added_date),
+    })
+    if category:
+        out = out.drop(columns="Category")
+    if category != "master" and not (found["category"] == "master").any():
+        out = out.drop(columns=["First Name", "Last Name", "Company", "Job Title"])
+    return out.to_csv(index=False).encode("utf-8")
+
+
+def _search_downloads(query, counts):
+    """Download every match in one file, or each category's matches on their own."""
+    total = sum(counts.values())
+    hit_cats = [c for c in SEARCH_ORDER if counts[c]]
+    stem = f"email_search_{safe_filename(query, 'results')}"
+    st.caption("Download every match as CSV — not just the rows shown above:")
+    # One category alone needs no second button: "all" is already that category.
+    per_cat = hit_cats if len(hit_cats) > 1 else []
+    cols = st.columns(4 if len(per_cat) < 4 else 5)
+    cols[0].download_button(
+        f"All matches ({total:,})", icon=":material/download:", type="primary", width="stretch",
+        data=lambda: _search_csv(query, counts), file_name=f"{stem}.csv", mime="text/csv",
+        key="dl_global_search_all",
+        help="Every match in every category as one CSV, with a Category column.",
+    )
+    for col, c in zip(cols[1:], per_cat):
+        label = db.CATEGORY_LABELS[c]
+        col.download_button(
+            f"{label} ({counts[c]:,})", icon=":material/download:", width="stretch",
+            data=lambda c=c: _search_csv(query, counts, c),
+            file_name=f"{stem}_{safe_filename(label)}.csv", mime="text/csv",
+            key=f"dl_global_search_{c}",
+            help=f"Only the {label} matches, as CSV.",
+        )
+
+
+with theme.card("global_search"):
+    theme.section_header(
+        None, "Find an email everywhere",
+        "Search Master, MQL, Unsubscribed and Bounce at once. Part of an address works too, e.g. “@acme.com”.",
+        "search",
+    )
+    # Clear sits outside the form: a second submit button would stop Enter from searching.
+    g_form_col, g_clear_col = st.columns([5, 1], vertical_alignment="bottom")
+    with g_form_col, st.container(key="global_search_box"):
+        with st.form("global_email_search_form", border=False):
+            g_text, g_go = st.columns([4, 1.25], vertical_alignment="bottom")
+            g_query = g_text.text_input("Email address", key="global_email_query",
+                                        placeholder="e.g. abc@email.com or part of an address")
+            g_searched = g_go.form_submit_button("Search", type="primary", width="stretch", icon=":material/search:")
+    # A minor action: a text button, so it doesn't compete with Search.
+    g_clear_col.button(
+        "Clear", key="global_search_clear", icon=":material/close:", type="tertiary",
+        on_click=clear_global_search,
+        disabled=not (st.session_state.get("global_email_query") or st.session_state.get("global_email_search")),
+        help="Clear the search box and its results.",
+    )
+    # The field's "Press Enter to submit form" hint sat on top of the typed text.
+    st.markdown('<style>.st-key-global_search_box [data-testid="InputInstructions"] { display: none; }</style>',
+                unsafe_allow_html=True)
+    if g_searched:
+        g_term = (g_query or "").strip()
+        if not g_term:
+            st.session_state.pop("global_email_search", None)
+            st.error("Type an email address, or part of one, then click Search.", icon=":material/error:")
+        else:
+            try:
+                with st.spinner("Searching every category…"):
+                    g_df, g_counts = db.search_email_everywhere(g_term, limit_per_category=GLOBAL_SEARCH_LIMIT)
+                st.session_state["global_email_search"] = {"query": g_term, "df": g_df, "counts": g_counts}
+                st.session_state.pop(GLOBAL_SEARCH_CAT_KEY, None)  # a new search opens on its own first category
+            except Exception as e:
+                st.session_state.pop("global_email_search", None)
+                theme.friendly_error("Couldn't search your lists", "Please try again.", e)
+    render_global_search_results(st.session_state.get("global_email_search"))
+
+
+theme.region_header("Your saved lists", "Open a category to add files, review its lists or remove them.",
+                    "folder_copy")
 tab_master, tab_mql, tab_bounce, tab_unsub = st.tabs(
-    [
-        _tab_label("Master leads", "master"),
-        _tab_label("MQL", "mql"),
-        _tab_label("Bounced", "bounce"),
-        _tab_label("Unsubscribed", "unsub"),
-    ]
+    [TAB_LABELS["master"], TAB_LABELS["mql"], TAB_LABELS["bounce"], TAB_LABELS["unsub"]],
+    key=DB_TAB_KEY, on_change="rerun",
 )
 
 
@@ -725,7 +914,76 @@ with tab_master:
 # ---------------------------------------------------------------------------- #
 # MQL / BOUNCE / UNSUB — email-only categories, same UI each
 # ---------------------------------------------------------------------------- #
-def render_email_category(category: str):
+LIST_VIEW_SORTS = {"Newest first": "newest", "Oldest first": "oldest", "Email A–Z": "email_asc", "Email Z–A": "email_desc"}
+LIST_VIEW_PAGE_SIZES = (25, 50, 100)
+
+
+def render_record_list(category: str):
+    """List view: every saved email of the category as a table, with filters, sorting and paging."""
+    label = EMAIL_CATEGORIES[category][0]
+    page_key = f"{category}_list_page"
+
+    def first_page():
+        st.session_state[page_key] = 1
+
+    def step_page(delta):
+        st.session_state[page_key] = max(1, st.session_state.get(page_key, 1) + delta)
+
+    with theme.card(f"{category}_records"):
+        theme.section_header(
+            None, f"All {label} records",
+            "Every saved email, one row for each list it's in. Filter, sort and page through them.", "table_rows",
+        )
+        try:
+            lists_df = db.get_email_lists(category)
+        except Exception as e:
+            lists_df = pd.DataFrame()
+            st.warning(f"Couldn't load your {label} lists ({e}). You can still search every record.")
+        names = {int(r.id): r.name for r in lists_df.itertuples()} if not lists_df.empty else {}
+
+        f_search, f_lists, f_sort, f_size = st.columns([2.2, 2, 1.3, 1], vertical_alignment="bottom")
+        search = f_search.text_input("Email contains", key=f"{category}_list_search",
+                                     placeholder="e.g. @acme.com", on_change=first_page)
+        chosen = f_lists.multiselect("Lists", list(names), format_func=lambda i: names.get(i, str(i)),
+                                     key=f"{category}_list_lists", placeholder="All lists", on_change=first_page)
+        sort_label = f_sort.selectbox("Sort", list(LIST_VIEW_SORTS), key=f"{category}_list_sort", on_change=first_page)
+        size = f_size.selectbox("Rows per page", LIST_VIEW_PAGE_SIZES, index=1, key=f"{category}_list_size",
+                                on_change=first_page)
+
+        page = max(1, int(st.session_state.get(page_key, 1)))
+        try:
+            rows, total = db.get_email_records(category, search, chosen, LIST_VIEW_SORTS[sort_label], size, (page - 1) * size)
+            pages = max(1, -(-total // size))
+            if page > pages:  # the data shrank since this page was chosen
+                page = st.session_state[page_key] = pages
+                rows, total = db.get_email_records(category, search, chosen, LIST_VIEW_SORTS[sort_label], size,
+                                                   (page - 1) * size)
+        except Exception as e:
+            theme.friendly_error(f"Couldn't load your {label} records", "Try refreshing the page.", e)
+            return
+        if total == 0:
+            if search or chosen:
+                theme.empty_state("search_off", "No matching records", "Try a different search or clear the filters.")
+            else:
+                theme.empty_state("inbox", f"No {label} records yet", "Switch to Standard view to add a file.")
+            return
+
+        st.dataframe(
+            pd.DataFrame({"Email": rows["email"], "List": rows["list_name"],
+                          "Added": rows["created_at"].map(fmt_datetime)}),
+            width="stretch", hide_index=True,
+        )
+        info, prev_col, next_col = st.columns([4, 1, 1], vertical_alignment="center")
+        start = (page - 1) * size + 1
+        info.caption(f"Showing {start:,}–{start + len(rows) - 1:,} of {total:,} records · page {page:,} of {pages:,}")
+        prev_col.button("Previous", key=f"{category}_list_prev", icon=":material/chevron_left:", width="stretch",
+                        disabled=page <= 1, on_click=step_page, args=(-1,))
+        next_col.button("Next", key=f"{category}_list_next", icon=":material/chevron_right:", width="stretch",
+                        disabled=page >= pages, on_click=step_page, args=(1,))
+        st.caption("To add files, delete a list or undo an upload, switch to Standard view.")
+
+
+def render_email_category(category: str, list_view: bool = False):
     label, icon, description = EMAIL_CATEGORIES[category]
     cnt = COUNTS[category]
 
@@ -737,6 +995,10 @@ def render_email_category(category: str):
         c1.metric("Emails", f"{cnt['unique']:,}", help="Unique email addresses — each is counted once.")
         c2.metric("Lists", f"{cnt['lists']:,}")
         last_upload_metric(c3, category)
+
+    if list_view:
+        render_record_list(category)
+        return
 
     with theme.card(f"{category}_add"):
         theme.section_header(
@@ -850,7 +1112,10 @@ def render_email_category(category: str):
 
 
 with tab_mql:
-    render_email_category("mql")
+    st.session_state.setdefault("mql_view", MQL_VIEWS[0])
+    mql_view = st.segmented_control("MQL view", MQL_VIEWS, required=True, key="mql_view",
+                                    label_visibility="collapsed")
+    render_email_category("mql", list_view=mql_view == MQL_VIEWS[1])
 
 with tab_bounce:
     render_email_category("bounce")

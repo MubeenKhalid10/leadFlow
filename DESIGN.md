@@ -161,7 +161,7 @@ components:
 
 LeadFlow reads like a statement from a private bank: nothing decorative, every figure ruled and aligned, confidence carried by restraint. The page is white. A single cool grey is the only second surface. Navy ink carries the type, the rail and the main action of each section. The product's promise is that the numbers can be defended, so the interface is set the way a reconciliation is set: rows in, each deduction with its reason, rows out, closed under a double rule.
 
-The system is flat. There are no gradients, glows, blur or drop shadows anywhere in the build; the only `box-shadow` in the stylesheet is the keyboard focus ring and the tab underline. A section is a band of the page under a hairline, not a floating box. Colour outside navy appears only when it means something: green for a finished outcome, amber for a caution, red for a failure or a delete.
+The system is flat. There are no gradients, glows, blur or drop shadows anywhere in the build; the only `box-shadow` in the stylesheet is the keyboard focus ring. A section is a band of the page under a hairline, not a floating box. Colour outside navy appears only when it means something: green for a finished outcome, amber for a caution, red for a failure or a delete.
 
 The look was chosen by the user as the familiar, premium end of the range, replacing an indigo and purple gradient look the user rejected as reading "AI generated".
 
@@ -218,7 +218,7 @@ The face is loaded from Google Fonts by `@import` in the stylesheet and named in
 - **Display** (600, 1.75rem, line-height 1.2, -0.015em; 1.45rem at 640px and below): the page title, once per page, with one sentence under it at 0.98rem.
 - **Headline** (600, 1.2rem, line-height 1.3, -0.01em; 1.1rem at 640px and below): section headings.
 - **Title** (600, 1.02rem): sub-headings inside a section and the statement's title. Group labels above related controls sit just under it at 0.95rem, 600.
-- **Body** (400, 0.93rem, line-height 1.45): section sub-lines (capped at 95ch), status lines, table values. Captions and hints step down to 0.78rem to 0.87rem in muted ink.
+- **Body** (400, 0.93rem, line-height 1.45): section sub-lines (capped at 95ch), status lines, table values. Captions and hints step down to 0.8125rem to 0.87rem in muted ink.
 - **Label** (600, 0.74rem, 0.07em, uppercase, muted ink): table column heads, statement group heads, and the per-cell labels that replace the heading row on phones (0.7rem). The small tag uses the same treatment at 0.7rem.
 - **Figure** (600, 0.95rem, tabular numerals, right-aligned): counts in the statement and tables. The closing figure is 700 at 1.35rem; metric values are 600 at 1.25rem.
 
@@ -247,7 +247,7 @@ Flat. No drop shadows, no gradients, no blur. Depth is conveyed by three things 
 ### Shadow Vocabulary
 - **Focus ring** (`box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1d4e89`): keyboard focus on every button, link, summary, tab, field, checkbox, radio and the drop area.
 - **Focus ring on the rail** (`box-shadow: 0 0 0 2px #0c1b33, 0 0 0 4px #ffffff`): the same ring inverted for controls on navy.
-- **Tab underline** (`box-shadow: inset 0 -2px 0 <colour>`): an inset line, not a shadow in effect; hairline on hover, Statement Navy when selected.
+- **Tab underline** (`border-bottom: 2px solid <colour>`): input-border grey on hover, Statement Navy when selected. A border rather than an inset shadow, so it never collides with the focus ring.
 
 ### Named Rules
 **The Flat Fill Rule.** Every surface is one solid colour. If a surface needs to stand apart, it gets a rule or the mist fill, never a shadow.

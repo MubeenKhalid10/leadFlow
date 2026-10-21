@@ -15,6 +15,7 @@ master_contacts   (id, list_id -> master_lists, email, first_name, last_name,
 bounce_lists      (id, name, created_at)
 bounce_emails     (id, list_id -> bounce_lists, email, created_at)
 mql_lists / mql_emails, unsub_lists / unsub_emails   (same shape as bounce)
+search_email_everywhere() looks an email up in all four categories at once.
 upload_history    (category, list_name, file_name, file_size_bytes, rows_in_file,
                    rows_written, rows_skipped, uploaded_by, uploaded_at)
 
@@ -340,6 +341,8 @@ EMAIL_CATEGORIES = {
     "unsub": ("unsub_lists", "unsub_emails"),
 }
 ALL_CATEGORIES = ("master", "mql", "bounce", "unsub")
+# Short labels shown wherever a record's category is named (search results, save target).
+CATEGORY_LABELS = {"master": "Master", "mql": "MQL", "unsub": "Unsubscribed", "bounce": "Bounce"}
 
 
 def _tables(category: str) -> tuple[str, str]:
@@ -1028,6 +1031,116 @@ def get_emails_df(category: str, list_ids: list[int], limit: int | None = None) 
     return _fetch_df(query + ";", tuple(params))
 
 
+EMAIL_RECORD_SORTS = {
+    "newest": "e.created_at DESC, e.id DESC",
+    "oldest": "e.created_at ASC, e.id ASC",
+    "email_asc": "e.email ASC, e.id ASC",
+    "email_desc": "e.email DESC, e.id DESC",
+}
+
+
+def _like_contains(text: str) -> str:
+    """ILIKE pattern matching `text` anywhere, with % _ and \\ taken literally."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def get_email_records(
+    category: str,
+    search: str | None = None,
+    list_ids: list[int] | None = None,
+    sort: str = "newest",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[pd.DataFrame, int]:
+    """One page of an email-only category's records (one row per list entry) for the list view.
+
+    `search` matches part of the email, case-insensitively; `list_ids` narrows to those lists.
+    Returns (rows, total matching rows). Columns: id, email, list_id, list_name, created_at.
+    """
+    lists_t, emails_t = _tables(category)
+    if sort not in EMAIL_RECORD_SORTS:
+        raise ValueError(f"Unknown sort: {sort!r}")
+    where, params = [], []
+    term = (search or "").strip()
+    if term:
+        where.append("e.email ILIKE %s")
+        params.append(_like_contains(term))
+    if list_ids:
+        where.append("e.list_id = ANY(%s)")
+        params.append(sorted({int(i) for i in list_ids}))
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    df = _fetch_df(
+        f"""
+        SELECT e.id, e.email, e.list_id, l.name AS list_name, e.created_at,
+               COUNT(*) OVER () AS total
+        FROM {emails_t} e JOIN {lists_t} l ON l.id = e.list_id
+        {where_sql}
+        ORDER BY {EMAIL_RECORD_SORTS[sort]}
+        LIMIT %s OFFSET %s
+        """,
+        tuple(params) + (int(limit), int(offset)),
+    )
+    if df.empty:
+        total = 0
+        if offset > 0:  # past the last page: the window count isn't available, so ask directly
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(f"SELECT COUNT(*) FROM {emails_t} e {where_sql}", tuple(params))
+                total = int(cur.fetchone()[0])
+        return df.drop(columns=["total"]), total
+    total = int(df["total"].iloc[0])
+    return df.drop(columns=["total"]), total
+
+
+SEARCH_RESULT_COLUMNS = ["category", "category_label", "email", "list_id", "list_name", "created_at",
+                         "first_name", "last_name", "company", "job_title"]
+
+
+def search_email_everywhere(query: str, limit_per_category: int = 200) -> tuple[pd.DataFrame, dict]:
+    """Find records whose email contains `query` (case-insensitive) in every category:
+    Master, MQL, Unsubscribed and Bounce.
+
+    Every match is its own row, tagged with its category and list — an email saved in Master
+    and in Bounce comes back twice, never merged. Exact matches sort first. Each category returns
+    at most `limit_per_category` rows; the second value maps every category to its full match count.
+    """
+    term = (query or "").strip()
+    counts = {cat: 0 for cat in ALL_CATEGORIES}
+    if not term:
+        return pd.DataFrame(columns=SEARCH_RESULT_COLUMNS), counts
+    pattern = _like_contains(term)
+    exact = normalize_email(term)
+    lim = int(limit_per_category)
+    arms = [
+        "(SELECT 'master' AS category, c.email, c.list_id, l.name AS list_name, c.created_at, "
+        "c.first_name, c.last_name, c.company, c.job_title, COUNT(*) OVER () AS total "
+        "FROM master_contacts c JOIN master_lists l ON l.id = c.list_id WHERE c.email ILIKE %s "
+        "ORDER BY (c.email = %s) DESC, c.email, c.id LIMIT %s)"
+    ]
+    params: list = [pattern, exact, lim]
+    for cat in ("mql", "unsub", "bounce"):
+        lists_t, emails_t = _tables(cat)
+        arms.append(
+            f"(SELECT '{cat}' AS category, e.email, e.list_id, l.name AS list_name, e.created_at, "
+            "NULL::text, NULL::text, NULL::text, NULL::text, COUNT(*) OVER () AS total "
+            f"FROM {emails_t} e JOIN {lists_t} l ON l.id = e.list_id WHERE e.email ILIKE %s "
+            "ORDER BY (e.email = %s) DESC, e.email, e.id LIMIT %s)"
+        )
+        params += [pattern, exact, lim]
+    df = _fetch_df(" UNION ALL ".join(arms), tuple(params))
+    if df.empty:
+        return pd.DataFrame(columns=SEARCH_RESULT_COLUMNS), counts
+    for cat, total in df.groupby("category")["total"].first().items():
+        counts[cat] = int(total)
+    order = {cat: i for i, cat in enumerate(CATEGORY_LABELS)}
+    df["_exact"] = df["email"] != exact
+    df["_cat"] = df["category"].map(order)
+    df = df.sort_values(["_exact", "email", "_cat", "list_name"], kind="stable").reset_index(drop=True)
+    df["category_label"] = df["category"].map(CATEGORY_LABELS)
+    return df[SEARCH_RESULT_COLUMNS], counts
+
+
 def delete_email_list(category: str, list_id: int) -> None:
     lists_t, _ = _tables(category)
     with get_conn() as conn:
@@ -1076,6 +1189,20 @@ def delete_bounce_list(list_id: int) -> None:
 
 def rename_bounce_list(list_id: int, new_name: str) -> None:
     rename_email_list("bounce", list_id, new_name)
+
+
+def store_records(category: str, list_name: str, records: list[dict], upload: dict | None = None) -> tuple[int, int]:
+    """Save contact records into a named list of any category, creating the list if needed.
+
+    Master keeps the full record (upsert_master_contacts); MQL / Unsub / Bounce keep only the
+    email (upsert_emails), with the same per-list de-duplication as a file import. `upload` is
+    logged in upload_history as with those functions. Returns (list_id, rows written).
+    """
+    if category == "master":
+        list_id = get_or_create_master_list(list_name)
+        return list_id, upsert_master_contacts(list_id, records, upload=upload)
+    list_id = get_or_create_email_list(category, list_name)
+    return list_id, upsert_emails(category, list_id, [r.get("email") for r in records], upload=upload)
 
 
 # --------------------------------------------------------------------------- #

@@ -154,6 +154,17 @@ def section_header(number, title, subtitle=None, icon_name=""):
     )
 
 
+def region_header(title, subtitle=None, icon_name=""):
+    """Heading for a major part of the page that sits outside a card, such as a row of tabs.
+    Looks like the page title (same size, same muted icon) but is an h2 beneath it."""
+    sub = f'<p class="lf-region-sub">{html.escape(subtitle)}</p>' if subtitle else ""
+    lead = icon(icon_name) if icon_name else ""
+    st.markdown(
+        f'<div class="lf-region-head"><h2 class="lf-region-title">{lead}{html.escape(title)}</h2>{sub}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def workflow_steps(current, target=None):
     """Progress strip for the main workflow. Steps before `current` (0-based) are done.
 
@@ -312,7 +323,7 @@ def inject_theme():
     """Inject the global CSS. Call once per page after set_page_config.
 
     The look: white boxes on a cool grey page, hairline borders and navy ink. Every section
-    is a box whose heading sits in a pale navy band; checkboxes and tabs are boxed too.
+    is a box whose heading sits in a pale navy band; checkboxes are boxed too, tabs are underlined.
     Flat fills only (no gradients, glows or blur), 4px corners, and colour used for
     meaning: navy for actions and the current step; green, amber and red for outcomes.
     """
@@ -507,7 +518,7 @@ def inject_theme():
         }
 
         .lf-sidebar-brand-sub {
-            font-size: 0.78rem;
+            font-size: 0.8125rem;
             font-weight: 400;
             color: var(--lf-rail-muted) !important;
             line-height: 1.4;
@@ -627,7 +638,7 @@ def inject_theme():
         }
 
         .lf-sidebar-user-role {
-            font-size: 0.78rem;
+            font-size: 0.8125rem;
             font-weight: 400;
             color: var(--lf-rail-muted) !important;
         }
@@ -719,7 +730,8 @@ def inject_theme():
 
         /* Streamlit adds a "link to heading" icon to every heading; these are app titles, not doc anchors. */
         .lf-page-head [data-testid="stHeaderActionElements"],
-        .lf-section-head [data-testid="stHeaderActionElements"] {
+        .lf-section-head [data-testid="stHeaderActionElements"],
+        .lf-region-head [data-testid="stHeaderActionElements"] {
             display: none !important;
         }
 
@@ -811,6 +823,29 @@ def inject_theme():
             margin-top: 0.2rem;
             line-height: 1.45;
             max-width: 95ch;
+        }
+
+        /* Heading for a major part of the page outside any card (theme.region_header): set like
+           the page title, icon included, since it opens the page's second half. */
+        .lf-region-head { margin: 1.25rem 0 0.35rem; }
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] h2.lf-region-title {
+            margin: 0;
+            padding: 0;
+            color: var(--lf-title);
+            font-size: 1.75rem;
+            font-weight: 600;
+            line-height: 1.2;
+            letter-spacing: -0.015em;
+        }
+        .lf-region-title .lf-icon {
+            color: var(--lf-muted);
+            margin-right: 0.5rem;
+            font-size: 1.1em;
+        }
+        [data-testid="stAppViewContainer"] [data-testid="stMain"] p.lf-region-sub {
+            margin: 0.35rem 0 0;
+            color: var(--lf-body);
+            font-size: 0.98rem;
         }
 
         /* Sub-headings inside a section. */
@@ -988,7 +1023,7 @@ def inject_theme():
         .lf-why-label small {
             display: block;
             font-weight: 400;
-            font-size: 0.78rem;
+            font-size: 0.8125rem;
             color: var(--lf-muted);
         }
         .lf-why-bar {
@@ -1013,7 +1048,7 @@ def inject_theme():
         .lf-why-row.lf-off .lf-why-label { color: var(--lf-muted); font-weight: 400; }
         .lf-why-row.lf-off .lf-why-bar { background: none; }
         .lf-why-row.lf-off .lf-why-count {
-            font-size: 0.78rem;
+            font-size: 0.8125rem;
             font-weight: 500;
             color: var(--lf-muted);
         }
@@ -1268,10 +1303,11 @@ def inject_theme():
         /* Tertiary: text link style */
         :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"] {
             color: var(--lf-link) !important;
-            min-height: 2.25rem;
+            /* Field height, so it lines up with the inputs and buttons beside it. */
+            min-height: 2.5rem;
             font-weight: 600 !important;
         }
-        :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"]:hover {
+        :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"]:hover:not(:disabled) {
             color: var(--lf-primary-hover) !important;
             text-decoration: underline;
             text-underline-offset: 0.18em;
@@ -1296,6 +1332,13 @@ def inject_theme():
             opacity: 1 !important;
             cursor: not-allowed !important;
         }
+        /* A disabled text button stays text: no grey box around it. */
+        [data-testid="stMain"] .stElementContainer .stButton button[kind="tertiary"]:disabled,
+        [role="dialog"] .stElementContainer .stButton button[kind="tertiary"]:disabled {
+            background: none !important;
+            border-color: transparent !important;
+            text-decoration: none;
+        }
 
         /* Visible keyboard focus on every interactive control: a solid two-tone ring that
            holds 3:1 against the page, tinted panels and filled buttons alike. */
@@ -1307,9 +1350,10 @@ def inject_theme():
             outline: none !important;
             box-shadow: var(--lf-focus) !important;
         }
-        [data-testid="stCheckbox"] label:has(input:focus-visible) span[data-baseweb="checkbox"] > div:first-child,
-        [data-testid="stCheckbox"] label:has(input:focus-visible) > span:first-child,
-        div[data-baseweb="radio"]:has(input:focus-visible) > div:first-child {
+        /* Streamlit only rings a checkbox that is already ticked, and marks a focused radio with
+           a faint tint; ring the box or the radio dot in every state. */
+        [data-testid="stCheckbox"][data-focus-visible] div:has(+ div [data-testid="stMarkdownContainer"]),
+        [data-testid="stRadioGroup"] label[data-focus-visible] > div > div:first-child:has(> div:only-child) {
             box-shadow: var(--lf-focus) !important;
         }
         [data-testid="stSidebar"] button:focus-visible,
@@ -1318,15 +1362,16 @@ def inject_theme():
         }
 
         /* ---------------------------------------------------------------
-           TABS: each tab is a box; the selected one is filled navy with
-           white, heavier text, so it never depends on colour alone.
+           TABS: text on a ruled line; the selected one takes a 2px navy bar
+           underneath and heavier, darker text, so it never depends on colour
+           alone. No fill: a filled navy box would read as a primary button.
            --------------------------------------------------------------- */
         [data-testid="stTabs"] [role="tablist"] {
-            gap: 0.5rem;
+            gap: 1.75rem;
             border-bottom: 1px solid var(--lf-border);
             flex-wrap: wrap;
-            padding-bottom: 0.75rem;
-            margin-bottom: 0.6rem;
+            padding-bottom: 0;
+            margin-bottom: 1rem;
         }
 
         /* Streamlit's own sliding highlight and track; the rule and underline above replace them. */
@@ -1337,29 +1382,32 @@ def inject_theme():
         }
 
         [data-testid="stTabs"] [role="tab"] {
-            border: 1px solid var(--lf-input-border);
-            border-radius: var(--lf-radius);
-            background: var(--lf-surface);
-            padding: 0.5rem 1rem;
-            font-weight: 600;
-            font-size: 0.92rem;
+            border: none;
+            border-bottom: 2px solid transparent;
+            border-radius: 0;
+            background: none;
+            /* The bar sits on the tablist rule rather than above it. */
+            margin-bottom: -1px;
+            padding: 0.6rem 0.15rem 0.5rem;
+            font-weight: 500;
+            font-size: 0.95rem;
             color: var(--lf-body);
-            transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+            transition: color 0.15s ease, border-color 0.15s ease;
         }
 
         [data-testid="stTabs"] [role="tab"] * { color: inherit !important; }
 
         [data-testid="stTabs"] [role="tab"]:hover {
             color: var(--lf-title);
-            background: var(--lf-mist);
-            border-color: var(--lf-title);
+            background: none;
+            border-bottom-color: var(--lf-input-border);
         }
 
         [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-            color: #ffffff !important;
+            color: var(--lf-title) !important;
             font-weight: 700;
-            background: var(--lf-primary);
-            border-color: var(--lf-primary);
+            background: none;
+            border-bottom-color: var(--lf-primary);
         }
 
         [data-testid="stTabs"] [role="tab"]:focus-visible {
@@ -1391,6 +1439,9 @@ def inject_theme():
         }
         [data-testid="stMain"] [data-testid="stCheckbox"] {
             width: 100%;
+            /* Same height as an input or button, so a checkbox lines up with them in a row. */
+            min-height: 2.5rem;
+            box-sizing: border-box;
             padding: 0.55rem 0.75rem;
             background: var(--lf-mist);
             border: 1px solid var(--lf-border);
@@ -1417,13 +1468,24 @@ def inject_theme():
             text-overflow: clip !important;
         }
 
-        div[data-baseweb="radio"] > div:first-child,
-        [data-testid="stCheckbox"] span[data-baseweb="checkbox"] > div:first-child {
+        /* The tick box and the radio ring. Streamlit (1.64, react-aria) draws both in its faint
+           border colour, about 1.5:1 on white; an unticked control must hold 3:1 (WCAG 1.4.11).
+           Both widgets are a <label> carrying data-selected / data-disabled / data-focus-visible.
+           The box is the div just before the label text; the ring is the div holding one inner
+           dot, and is drawn as its background, not a border. Disabled controls are exempt. */
+        [data-testid="stCheckbox"]:not([data-selected]):not([data-disabled])
+            div:has(+ div [data-testid="stMarkdownContainer"]) {
             border-color: var(--lf-input-border) !important;
+            background-color: #ffffff !important;
         }
-
-        div[data-baseweb="radio"] input:checked + div,
-        [data-testid="stCheckbox"] input:checked + span > div:first-child {
+        [data-testid="stRadioGroup"] label:not([data-selected]):not([data-disabled])
+            > div > div:first-child:has(> div:only-child) {
+            background-color: var(--lf-input-border) !important;
+        }
+        [data-testid="stCheckbox"][data-selected]:not([data-disabled])
+            div:has(+ div [data-testid="stMarkdownContainer"]),
+        [data-testid="stRadioGroup"] label[data-selected]:not([data-disabled])
+            > div > div:first-child:has(> div:only-child) {
             background-color: var(--lf-primary) !important;
             border-color: var(--lf-primary) !important;
         }
@@ -1623,7 +1685,7 @@ def inject_theme():
         .lf-step.todo .lf-step-label { color: var(--lf-muted); font-weight: 500; }
 
         .lf-step-hint {
-            font-size: 0.76rem;
+            font-size: 0.8125rem;
             color: var(--lf-muted);
             white-space: nowrap;
             overflow: hidden;
@@ -1701,7 +1763,7 @@ def inject_theme():
             div[class*="st-key-lf_card_"] { --lf-card-pad: 0.9rem; padding-bottom: 1rem; }
             div[class*="st-key-lf_subcard_"] { --lf-card-pad: 0.8rem; padding-bottom: 0.9rem; }
             .lf-stepper { padding: 0.7rem 0.8rem; }
-            [data-testid="stAppViewContainer"] [data-testid="stMain"] h1.lf-page-title { font-size: 1.45rem; }
+            [data-testid="stAppViewContainer"] [data-testid="stMain"] :is(h1.lf-page-title, h2.lf-region-title) { font-size: 1.45rem; }
             [data-testid="stAppViewContainer"] [data-testid="stMain"] .lf-section-head h2 { font-size: 1.1rem; }
             /* Tabs stay on one line and scroll sideways rather than wrapping under the rule. */
             [data-testid="stTabs"] [role="tablist"] {
