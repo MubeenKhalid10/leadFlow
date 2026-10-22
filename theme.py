@@ -1296,27 +1296,29 @@ def inject_theme():
 
         /* Secondary */
         :is([data-testid="stMain"], [role="dialog"])
-            button:is([kind="secondary"], [kind="secondaryFormSubmit"]) {
+            :is(button:is([kind="secondary"], [kind="secondaryFormSubmit"]), a[data-testid="stBaseLinkButton-secondary"]) {
             background: #ffffff !important;
             color: var(--lf-btn-a, var(--lf-title)) !important;
             border: 1px solid var(--lf-btn-a, var(--lf-input-border)) !important;
             box-shadow: none !important;
+            text-decoration: none !important;
         }
         :is([data-testid="stMain"], [role="dialog"])
-            button:is([kind="secondary"], [kind="secondaryFormSubmit"]):hover {
+            :is(button:is([kind="secondary"], [kind="secondaryFormSubmit"]), a[data-testid="stBaseLinkButton-secondary"]):hover {
             background: var(--lf-btn-soft, var(--lf-mist)) !important;
             color: var(--lf-btn-hover, var(--lf-title)) !important;
             border-color: var(--lf-btn-hover, var(--lf-title)) !important;
         }
 
         /* Tertiary: text link style */
-        :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"] {
+        :is([data-testid="stMain"], [role="dialog"]) :is(button[kind="tertiary"], a[data-testid="stBaseLinkButton-tertiary"]) {
             color: var(--lf-link) !important;
             /* Field height, so it lines up with the inputs and buttons beside it. */
             min-height: 2.5rem;
             font-weight: 600 !important;
         }
-        :is([data-testid="stMain"], [role="dialog"]) button[kind="tertiary"]:hover:not(:disabled) {
+        :is([data-testid="stMain"], [role="dialog"])
+            :is(button[kind="tertiary"]:not(:disabled), a[data-testid="stBaseLinkButton-tertiary"]:not([disabled])):hover {
             color: var(--lf-primary-hover) !important;
             text-decoration: underline;
             text-underline-offset: 0.18em;
@@ -1334,7 +1336,8 @@ def inject_theme():
         [data-testid="stMain"] .stElementContainer :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
             button[data-testid^="stBaseButton"]:disabled,
         [role="dialog"] .stElementContainer :is(.stButton, [data-testid="stDownloadButton"], [data-testid="stFormSubmitButton"])
-            button[data-testid^="stBaseButton"]:disabled {
+            button[data-testid^="stBaseButton"]:disabled,
+        :is([data-testid="stMain"], [role="dialog"]) a[data-testid^="stBaseLinkButton"][disabled] {
             background: var(--lf-border-soft) !important;
             color: var(--lf-muted) !important;
             border: 1px solid var(--lf-border) !important;

@@ -1,25 +1,27 @@
 """
-LeadFlow — database backup (read-only CSV export)
--------------------------------------------------
+LeadFlow — database backup (read-only Excel export)
+---------------------------------------------------
 
-Exports the saved records of one category (Master, MQL, Bounce or Unsubscribed)
-as a CSV, or all four at once as a ZIP holding one CSV per table
-(master_contacts.csv, mql_emails.csv, bounce_emails.csv, unsub_emails.csv). Each CSV
-holds exactly the columns of its database table (read from the database, in table
-order) and each value as PostgreSQL writes it as text; nothing is added.
+Exports the saved records of one category (Master, MQL, Bounce or Unsubscribed),
+or all four at once, as one Excel workbook (.xlsx). Each category gets its own
+sheet holding exactly the columns of its database table (read from the database,
+in table order) and each value as PostgreSQL writes it as text; nothing is added.
 
-A table with more than PART_ROWS records is split into parts (master_contacts_part1.csv,
-master_contacts_part2.csv, …), each with the header row, so every file opens completely
-in Excel (at most 1,048,576 rows per sheet). A single category that needs parts comes as
-a ZIP of them. File names carry the number of records actually written:
+An Excel sheet holds at most 1,048,576 rows, so a category with more than SHEET_ROWS
+records continues on a new sheet in the same workbook: "Master (1)", "Master (2)", …
+Every sheet starts with the header row. File names carry the number of records
+actually written:
 
-    LeadFlow_Master_Backup_<record_count>_records_<YYYY-MM-DD>.csv   (one category)
-    LeadFlow_Master_Backup_<record_count>_records_<YYYY-MM-DD>.zip   (one category, in parts)
-    LeadFlow_Backup_<record_count>_records_<YYYY-MM-DD>.zip          (all categories)
+    LeadFlow_Master_Backup_<record_count>_records_<YYYY-MM-DD>.xlsx   (one category)
+    LeadFlow_Backup_<record_count>_records_<YYYY-MM-DD>.xlsx          (all categories)
 
 How it stays small and correct with millions of rows
-  * Rows are read through PostgreSQL server-side cursors in batches and written
-    straight to a file on disk; at most one batch is ever held in memory.
+  * Rows are read through PostgreSQL server-side cursors in batches and each sheet's
+    XML is streamed straight into the workbook file on disk; at most one batch is
+    ever held in memory. (XlsxWriter's low-memory mode took ~14 minutes for 2M
+    rows, so the few XML parts of the workbook are written here directly.)
+  * Every value is stored as a text cell, so Excel never turns an id into a number,
+    drops a leading zero, reformats a date or runs text starting with "=" as a formula.
   * The whole export runs in one REPEATABLE READ, READ ONLY transaction, so every
     table is read from the same snapshot and nothing can be changed by it.
   * Each table's COUNT(*) is taken in that same snapshot and must equal the rows
@@ -36,10 +38,9 @@ Serving the file
 
 from __future__ import annotations
 
-import csv
 import datetime as dt
-import io
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -47,18 +48,21 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape, quoteattr as _xml_attr
 
 import db
 
 BATCH_ROWS = 10_000            # rows fetched from the server per round trip (~15 MB in Python)
-PART_ROWS = 1_000_000          # records per CSV file; Excel shows at most 1,048,576 rows (header included)
+EXCEL_MAX_ROWS = 1_048_576     # rows in one Excel sheet, header included
+SHEET_ROWS = EXCEL_MAX_ROWS - 1  # records per sheet, after the header row
+EXCEL_MAX_CELL_CHARS = 32_767  # characters Excel keeps in one cell
 DOWNLOAD_TTL_SECONDS = 30 * 60  # how long a prepared backup can be downloaded
 ROUTE_PATH = "/api/backup/{token}"
 
 # Record table of each category, in the order "all" writes them.
 TABLES = {"master": "master_contacts", "mql": "mql_emails", "bounce": "bounce_emails", "unsub": "unsub_emails"}
 SCOPES = ("all", *TABLES)
-MEDIA_TYPES = {".csv": "text/csv", ".zip": "application/zip"}
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 class BackupError(Exception):
@@ -76,35 +80,29 @@ class BackupResult:
     record_count: int
     size_bytes: int
     per_category: dict = field(default_factory=dict)
-
-    @property
-    def media_type(self) -> str:
-        return MEDIA_TYPES[Path(self.filename).suffix]
+    sheets: list = field(default_factory=list)  # sheet names, in workbook order
+    media_type: str = XLSX_MEDIA_TYPE
 
 
 def scope_label(scope: str) -> str:
     return "All" if scope == "all" else db.CATEGORY_LABELS[scope]
 
 
-def backup_filename(record_count: int, day: dt.date | None = None, scope: str = "all",
-                    in_parts: bool = False) -> str:
-    """LeadFlow_Backup_<n>_records_<date>.zip for "all"; LeadFlow_<Category>_Backup_<n>_records_<date>.csv
-    for one category, or .zip when it is split into parts."""
+def backup_filename(record_count: int, day: dt.date | None = None, scope: str = "all") -> str:
+    """LeadFlow_Backup_<n>_records_<date>.xlsx for "all", LeadFlow_<Category>_Backup_<n>_records_<date>.xlsx otherwise."""
     if scope not in SCOPES:
         raise ValueError(f"Unknown backup scope: {scope!r}")
     day = day or dt.date.today()
-    if scope == "all":
-        return f"LeadFlow_Backup_{int(record_count)}_records_{day:%Y-%m-%d}.zip"
-    ext = "zip" if in_parts else "csv"
-    return f"LeadFlow_{scope_label(scope)}_Backup_{int(record_count)}_records_{day:%Y-%m-%d}.{ext}"
+    prefix = "LeadFlow" if scope == "all" else f"LeadFlow_{scope_label(scope)}"
+    return f"{prefix}_Backup_{int(record_count)}_records_{day:%Y-%m-%d}.xlsx"
 
 
-def part_names(table: str, record_count: int, part_rows: int = PART_ROWS) -> list[str]:
-    """The CSV file(s) a table is written to: <table>.csv, or <table>_part1.csv, … when it has
-    more than part_rows records."""
-    if record_count <= part_rows:
-        return [f"{table}.csv"]
-    return [f"{table}_part{i}.csv" for i in range(1, -(-record_count // part_rows) + 1)]
+def sheet_names(label: str, record_count: int, sheet_rows: int = SHEET_ROWS) -> list[str]:
+    """The sheet(s) a category is written to: "<label>", or "<label> (1)", "<label> (2)", … when it
+    has more than sheet_rows records."""
+    if record_count <= sheet_rows:
+        return [label]
+    return [f"{label} ({i})" for i in range(1, -(-record_count // sheet_rows) + 1)]
 
 
 def backup_dir() -> Path:
@@ -127,41 +125,146 @@ def table_columns(cur, table: str) -> list[str]:
 
 
 def _select_sql(table: str, columns: list[str]) -> str:
-    # ::text gives each value exactly as PostgreSQL writes it (NULL stays NULL -> empty field).
+    # ::text gives each value exactly as PostgreSQL writes it (NULL stays NULL -> empty cell).
     cols = ", ".join(f't."{c}"::text AS "{c}"' for c in columns)
     # t."id" is the table's numeric id; a bare "id" would sort the text output column instead.
     order = ' ORDER BY t."id"' if "id" in columns else ""
     return f"SELECT {cols} FROM {table} t{order}"
 
 
-def _write_table(conn, table, columns, open_part, batch_size, on_rows, part_rows=None) -> int:
-    """Stream one table as CSV (header = its column names) into the text file open_part(1) returns,
-    moving on to open_part(2), … whenever a file holds part_rows records (None: never).
-    Returns the rows written."""
-    written = in_part = 0
-    part = 1
-    f = open_part(part)
-    writer = csv.writer(f)
-    writer.writerow(columns)
+# --------------------------------------------------------------------------- #
+# Minimal streaming .xlsx writer: text cells only, a bold frozen header row
+# --------------------------------------------------------------------------- #
+_NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+_NS_R = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_STYLES = (
+    f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet {_NS}>'
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font>'
+    '<font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts>'
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>'
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+    '</styleSheet>'
+)
+_SHEET_START = (
+    f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet {_NS} {_NS_R}>'
+    '<sheetViews><sheetView workbookViewId="0">'
+    '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+    '</sheetView></sheetViews><sheetData>'
+)
+_SHEET_END = "</sheetData></worksheet>"
+
+# Characters XML can't hold (and \r, which XML readers turn into \n) are written as Excel's
+# _xHHHH_ escapes; text that already looks like one has its "_" escaped so it reads back as typed.
+_NEEDS_ESCAPE = re.compile(r"[&<>\x00-\x08\x0b-\x1f￾￿]|_x[0-9A-Fa-f]{4}_")
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f￾￿]")
+_LOOKS_ESCAPED = re.compile(r"_(x[0-9A-Fa-f]{4}_)")
+
+
+def _cell_text(value: str) -> str:
+    if not _NEEDS_ESCAPE.search(value):
+        return value
+    value = _LOOKS_ESCAPED.sub(r"_x005F_\1", value)
+    value = _CONTROL.sub(lambda m: f"_x{ord(m.group()):04X}_", value)
+    return _xml_escape(value)
+
+
+def _column_letters(n: int) -> list[str]:
+    out = []
+    for i in range(1, n + 1):
+        letters = ""
+        while i:
+            i, rem = divmod(i - 1, 26)
+            letters = chr(65 + rem) + letters
+        out.append(letters)
+    return out
+
+
+def _row_xml(row_number: int, values, letters, style: str = "") -> str:
+    cells = "".join(
+        f'<c r="{letters[i]}{row_number}"{style} t="inlineStr"><is><t xml:space="preserve">{_cell_text(v)}</t></is></c>'
+        for i, v in enumerate(values) if v is not None
+    )
+    return f'<row r="{row_number}">{cells}</row>'
+
+
+def _write_workbook_parts(zf: zipfile.ZipFile, sheets: list[str]) -> None:
+    """The workbook's index parts, naming sheet1.xml, sheet2.xml, … as `sheets`, in order."""
+    n = len(sheets)
+    zf.writestr("[Content_Types].xml", (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/styles.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        + "".join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" '
+                  'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                  for i in range(1, n + 1))
+        + "</Types>"
+    ))
+    zf.writestr("_rels/.rels", (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{_REL}/officeDocument" Target="xl/workbook.xml"/></Relationships>'
+    ))
+    zf.writestr("xl/workbook.xml", (
+        f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook {_NS} {_NS_R}><sheets>'
+        + "".join(f'<sheet name={_xml_attr(name)} sheetId="{i}" r:id="rId{i}"/>' for i, name in enumerate(sheets, 1))
+        + "</sheets></workbook>"
+    ))
+    zf.writestr("xl/_rels/workbook.xml.rels", (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + "".join(f'<Relationship Id="rId{i}" Type="{_REL}/worksheet" Target="worksheets/sheet{i}.xml"/>'
+                  for i in range(1, n + 1))
+        + f'<Relationship Id="rId{n + 1}" Type="{_REL}/styles" Target="styles.xml"/></Relationships>'
+    ))
+    zf.writestr("xl/styles.xml", _STYLES)
+
+
+def _write_table(conn, table, columns, open_sheet, batch_size, on_rows, sheet_rows) -> int:
+    """Stream one table into sheets: open_sheet(1) returns a text file for the first sheet's XML,
+    open_sheet(2) the next once a sheet holds sheet_rows records. Each sheet starts with the
+    header row (the column names). Returns the rows written."""
+    letters = _column_letters(len(columns))
+    header = _row_xml(1, columns, letters, ' s="1"')
+    written = in_sheet = 0
+    sheet = 1
+    f = open_sheet(sheet)
+    f.write(_SHEET_START + header)
     named = conn.cursor(name=f"lf_backup_{table}")
     named.itersize = batch_size
     try:
         named.execute(_select_sql(table, columns))
         while rows := named.fetchmany(batch_size):
-            start = 0
-            while start < len(rows):  # a batch can straddle two parts
-                if part_rows and in_part == part_rows:
+            parts = []
+            for row in rows:
+                if in_sheet == sheet_rows:  # sheet full: the rest continues on a new sheet
+                    f.write("".join(parts) + _SHEET_END)
+                    parts = []
                     f.close()
-                    part, in_part = part + 1, 0
-                    f = open_part(part)
-                    writer = csv.writer(f)
-                    writer.writerow(columns)
-                chunk = rows[start:start + part_rows - in_part] if part_rows else rows[start:]
-                writer.writerows(chunk)
-                in_part += len(chunk)
-                start += len(chunk)
+                    sheet, in_sheet = sheet + 1, 0
+                    f = open_sheet(sheet)
+                    f.write(_SHEET_START + header)
+                for v in row:
+                    if v is not None and len(v) > EXCEL_MAX_CELL_CHARS:
+                        raise BackupError(
+                            f"A value in {table} (record id {row[0]}) is longer than the "
+                            f"{EXCEL_MAX_CELL_CHARS:,} characters an Excel cell can hold, so it can't be backed up "
+                            "to Excel without losing part of it.")
+                in_sheet += 1
+                parts.append(_row_xml(in_sheet + 1, row, letters))
+            f.write("".join(parts))
             written += len(rows)
             on_rows(len(rows))
+        f.write(_SHEET_END)
     finally:
         named.close()
         f.close()
@@ -169,11 +272,10 @@ def _write_table(conn, table, columns, open_part, batch_size, on_rows, part_rows
 
 
 def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size: int = BATCH_ROWS,
-                 part_rows: int = PART_ROWS, progress=None, day: dt.date | None = None) -> BackupResult:
-    """Export one category ("master", "mql", "bounce", "unsub") as CSV, or "all" of them as a
-    ZIP of one CSV per category, into dest_dir (default: backup_dir()); returns its details.
-    A table with more than part_rows records is written as parts (see part_names()); a single
-    category in parts comes as a ZIP.
+                 sheet_rows: int = SHEET_ROWS, progress=None, day: dt.date | None = None) -> BackupResult:
+    """Export one category ("master", "mql", "bounce", "unsub"), or "all" of them, as one Excel
+    workbook in dest_dir (default: backup_dir()); returns its details. Each category has its own
+    sheet; one with more than sheet_rows records continues on further sheets (see sheet_names()).
 
     progress(written, expected) is called after each batch. Raises EmptyDatabaseError when
     there is nothing to export and BackupError (or the database error) when the export fails;
@@ -188,6 +290,7 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
     os.close(fd)
     tmp_path = Path(tmp_name)
     per_category: dict[str, int] = {}
+    sheets: list[str] = []
     try:
         with db.get_conn() as conn:
             cur = conn.cursor()
@@ -211,22 +314,20 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
                 if progress:
                     progress(written, expected_total)
 
-            # Part names come from the snapshot's counts, which the rows written must match.
-            names = {cat: part_names(TABLES[cat], expected[cat], part_rows) for cat in cats}
-            zipped = scope == "all" or len(names[scope]) > 1
-            if zipped:
-                with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-                    for cat in cats:  # members named after the table: master_contacts.csv or _part1.csv, …
-                        def open_member(part, cat=cat):
-                            # Past the last expected part only if the table grew, which the count check rejects.
-                            name = names[cat][part - 1] if part <= len(names[cat]) else f"{TABLES[cat]}_part{part}.csv"
-                            return io.TextIOWrapper(zf.open(name, "w", force_zip64=True), encoding="utf-8", newline="")
-                        per_category[cat] = _write_table(conn, TABLES[cat], columns[cat], open_member,
-                                                         batch_size, on_rows, part_rows)
-            else:
-                per_category[scope] = _write_table(
-                    conn, TABLES[scope], columns[scope],
-                    lambda part: open(tmp_path, "w", encoding="utf-8", newline=""), batch_size, on_rows)
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                for cat in cats:
+                    # Sheet names come from the snapshot's counts, which the rows written must match.
+                    names = sheet_names(scope_label(cat), expected[cat], sheet_rows)
+
+                    def open_sheet(n, cat=cat, names=names):
+                        # Past the last expected sheet only if the table grew, which the count check rejects.
+                        sheets.append(names[n - 1] if n <= len(names) else f"{scope_label(cat)} ({n})")
+                        raw = zf.open(f"xl/worksheets/sheet{len(sheets)}.xml", "w", force_zip64=True)
+                        return _BufferedText(raw)
+
+                    per_category[cat] = _write_table(conn, TABLES[cat], columns[cat], open_sheet,
+                                                     batch_size, on_rows, sheet_rows)
+                _write_workbook_parts(zf, sheets)
             with open(tmp_path, "rb+") as f:
                 os.fsync(f.fileno())
 
@@ -235,15 +336,28 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
             detail = ", ".join(f"{scope_label(c)}: wrote {w:,} of {n:,}" for c, (w, n) in short.items())
             raise BackupError(f"The export was incomplete ({detail}).")
 
-        final = dest_dir / backup_filename(written, day, scope, in_parts=zipped)
+        final = dest_dir / backup_filename(written, day, scope)
         # A unique stored name, so two backups with the same count and day never collide;
         # the download is still offered under the exact backup_filename().
         stored = dest_dir / f"{final.stem}_{secrets.token_hex(4)}{final.suffix}"
         os.replace(tmp_path, stored)
-        return BackupResult(stored, final.name, written, stored.stat().st_size, per_category)
+        return BackupResult(stored, final.name, written, stored.stat().st_size, per_category, sheets)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+class _BufferedText:
+    """A zip member opened for writing, taking str: encodes to UTF-8 in large chunks."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def write(self, text: str) -> None:
+        self._raw.write(text.encode("utf-8"))
+
+    def close(self) -> None:
+        self._raw.close()
 
 
 # --------------------------------------------------------------------------- #

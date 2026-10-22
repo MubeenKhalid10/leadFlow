@@ -667,7 +667,7 @@ with theme.card("global_search"):
 
 
 # ---------------------------------------------------------------------------- #
-# BACKUP — every record in every category, as one CSV (read-only)
+# BACKUP — one category or all of them, as an Excel workbook (read-only)
 # ---------------------------------------------------------------------------- #
 BACKUP_KEY = "db_backup"
 
@@ -737,23 +737,17 @@ def render_backup_ready():
 with theme.card("backup"):
     theme.section_header(
         None, "Back up your database",
-        "Download one category's saved records as a CSV, or all of them at once. "
-        "Files hold exactly the columns stored in the database. Your data isn't changed.", "cloud_download",
+        "Download one category's saved records, or all of them at once, as an Excel file. "
+        "It holds exactly the columns stored in the database. Your data isn't changed.", "cloud_download",
     )
     backup_scope = st.segmented_control(
         "What to back up", list(BACKUP_SCOPE_NAMES), required=True, default="all", key=BACKUP_SCOPE_KEY,
         format_func=lambda s: f"{BACKUP_SCOPE_NAMES[s]} ({_backup_rows(s):,})",
     )
-    _rows = _backup_rows(backup_scope)
-    if backup_scope == "all":
-        _what = "A ZIP with one CSV per category"
-    elif _rows > backup.PART_ROWS:
-        _what = "A ZIP of CSV files"
-    else:
-        _what = "One CSV file"
     st.caption(
-        f"{_what}. About {_rows:,} records; large backups take a minute or two to prepare. "
-        f"Each file holds at most {backup.PART_ROWS:,} records, so it opens completely in Excel."
+        ("One Excel workbook with a sheet per category. " if backup_scope == "all" else "One Excel workbook. ")
+        + f"About {_backup_rows(backup_scope):,} records; large backups take a few minutes to prepare. "
+        f"A sheet holds up to {backup.SHEET_ROWS:,} records — more continue on a new sheet in the same file."
     )
     if st.button("Download Backup", key="db_backup_start", icon=":material/cloud_download:", type="primary"):
         prepare_backup(backup_scope)
