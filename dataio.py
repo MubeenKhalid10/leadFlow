@@ -303,6 +303,26 @@ def extract_emails_from_file(df):
     return pd.Series([], dtype=str)
 
 
+def extract_email_records(df):
+    """Return email records with every uploaded column preserved under its original header."""
+    mapping = auto_map_columns(df)
+    email_col = mapping.get("Email")
+    if not email_col or email_col not in df.columns:
+        return None
+    source_columns = [str(col) for col in df.columns]
+    records = []
+    for values in df.itertuples(index=False, name=None):
+        source_data = {
+            col: (None if pd.isna(value) else value)
+            for col, value in zip(source_columns, values)
+        }
+        email = source_data.get(str(email_col))
+        if email is None or str(email).strip().lower() in ("", "nan", "none", "null"):
+            continue
+        records.append({"email": email, "_source_data": source_data, "_source_columns": source_columns})
+    return records
+
+
 # Fields an MQL import keeps: standard column -> mql_emails column.
 MQL_FILE_FIELDS = {"First Name": "first_name", "Last Name": "last_name", "Company": "company",
                    "Job Title": "job_title", "Email": "email"}
@@ -326,5 +346,11 @@ def extract_mql_records(df):
             columns["last_name"] = parts[1]
     keys = list(columns)
     values = [s.astype(object).where(s.notna(), None) for s in columns.values()]  # missing cells -> None
-    records = (dict(zip(keys, row)) for row in zip(*values))
+    source_columns = [str(col) for col in df.columns]
+    source_rows = [
+        {col: (None if pd.isna(value) else value) for col, value in zip(source_columns, row)}
+        for row in df.itertuples(index=False, name=None)
+    ]
+    records = (dict(zip(keys, row), _source_data=source_data, _source_columns=source_columns)
+               for row, source_data in zip(zip(*values), source_rows))
     return [r for r in records if str(r["email"]).strip().lower() not in ("", "nan", "none", "null")]

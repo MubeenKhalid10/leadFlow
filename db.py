@@ -13,9 +13,9 @@ master_lists      (id, name, created_at)
 master_contacts   (id, list_id -> master_lists, email, first_name, last_name,
                    company, job_title, industry, location, created_at)
 bounce_lists      (id, name, created_at)
-bounce_emails     (id, list_id -> bounce_lists, email, created_at)
-mql_lists / mql_emails, unsub_lists / unsub_emails   (same shape as bounce; mql_emails also
-                   has first_name, last_name, company, job_title for entries added by hand)
+bounce_emails     (id, list_id -> bounce_lists, email, source_data, source_columns, created_at)
+mql_lists / mql_emails, unsub_lists / unsub_emails   (same shape as bounce; MQL also keeps
+                   normalized contact fields for suppression search)
 search_email_everywhere() looks an email up in all four categories at once.
 upload_history    (category, list_name, file_name, file_size_bytes, rows_in_file,
                    rows_written, rows_skipped, uploaded_by, uploaded_at)
@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import functools
 import io
+import json
 import os
 import threading
 import time
@@ -288,6 +289,8 @@ CREATE TABLE IF NOT EXISTS bounce_emails (
     id          BIGSERIAL PRIMARY KEY,
     list_id     INTEGER NOT NULL REFERENCES bounce_lists(id) ON DELETE CASCADE,
     email       TEXT NOT NULL,
+    source_data JSONB,
+    source_columns JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (list_id, email)
 );
@@ -303,6 +306,8 @@ CREATE TABLE IF NOT EXISTS mql_emails (
     id          BIGSERIAL PRIMARY KEY,
     list_id     INTEGER NOT NULL REFERENCES mql_lists(id) ON DELETE CASCADE,
     email       TEXT NOT NULL,
+    source_data JSONB,
+    source_columns JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (list_id, email)
 );
@@ -318,6 +323,8 @@ CREATE TABLE IF NOT EXISTS unsub_emails (
     id          BIGSERIAL PRIMARY KEY,
     list_id     INTEGER NOT NULL REFERENCES unsub_lists(id) ON DELETE CASCADE,
     email       TEXT NOT NULL,
+    source_data JSONB,
+    source_columns JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (list_id, email)
 );
@@ -436,6 +443,13 @@ def _ensure_mql_details(cur) -> None:
             cur.execute(f"ALTER TABLE mql_emails ADD COLUMN IF NOT EXISTS {col} TEXT")
 
 
+def _ensure_source_data(cur) -> None:
+    """Add raw uploaded row payloads to existing suppression tables."""
+    for table in ("mql_emails", "bounce_emails", "unsub_emails"):
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source_data JSONB")
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source_columns JSONB")
+
+
 def _link_past_merges(cur) -> None:
     """Match merges logged before tracking to the rows they inserted.
 
@@ -515,6 +529,7 @@ def init_db() -> tuple[bool, str | None]:
             cur = conn.cursor()
             cur.execute(SCHEMA_DDL)
             _ensure_mql_details(cur)
+            _ensure_source_data(cur)
             if not _MERGE_TRACKING_READY:
                 _ensure_merge_tracking(cur)
         _MERGE_TRACKING_READY = True
@@ -1046,7 +1061,14 @@ def upsert_mql_records(list_id: int, records, upload: dict | None = None) -> int
         if not email or email in seen:
             continue
         seen.add(email)
-        rows.append((list_id, email, *(_clean_field(rec.get(c)) for c in MQL_DETAIL_COLUMNS)))
+        source_data = rec.get("_source_data")
+        if source_data is None:
+            source_data = {k: v for k, v in rec.items()
+                           if k not in ("email", "_source_data", "_source_columns")}
+            source_data["Email"] = rec.get("email")
+        rows.append((list_id, email, *(_clean_field(rec.get(c)) for c in MQL_DETAIL_COLUMNS),
+                     json.dumps(source_data, ensure_ascii=False, default=str),
+                     json.dumps(rec.get("_source_columns") or list(source_data), ensure_ascii=False)))
     if not rows:
         if upload:
             rows_in_file = upload.get("rows_in_file", 0)
@@ -1059,17 +1081,63 @@ def upsert_mql_records(list_id: int, records, upload: dict | None = None) -> int
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TEMP TABLE _lf_mql_in (ord BIGINT, list_id INTEGER, email TEXT, "
-                    + ", ".join(f"{c} TEXT" for c in MQL_DETAIL_COLUMNS) + ") ON COMMIT DROP")
+                    + ", ".join(f"{c} TEXT" for c in MQL_DETAIL_COLUMNS)
+                    + ", source_data TEXT, source_columns TEXT) ON COMMIT DROP")
         _copy_rows(cur, "_lf_mql_in", ((i, *r) for i, r in enumerate(rows)))
         cur.execute(
-            f"INSERT INTO mql_emails (list_id, email, {cols}) "
-            f"SELECT list_id, email, {cols} FROM _lf_mql_in ORDER BY ord "
+            f"INSERT INTO mql_emails (list_id, email, {cols}, source_data, source_columns) "
+            f"SELECT list_id, email, {cols}, source_data::jsonb, source_columns::jsonb "
+            "FROM _lf_mql_in ORDER BY ord "
             "ON CONFLICT (list_id, email) DO NOTHING"
         )
         inserted = cur.rowcount
         if upload:
             rows_in_file = upload.get("rows_in_file", 0)
             _log_merge(cur, "mql", list_id, upload, inserted, max(rows_in_file - inserted, 0))
+    return inserted
+
+
+def upsert_email_records(category: str, list_id: int, records, upload: dict | None = None) -> int:
+    """Save uploaded rows for Bounce/Unsub, preserving every source column as JSONB."""
+    if category not in ("bounce", "unsub"):
+        raise ValueError(f"Unsupported raw-record category: {category!r}")
+    _, emails_t = _tables(category)
+    seen, rows = set(), []
+    for rec in records:
+        email = normalize_email(rec.get("email"))
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        source_data = rec.get("_source_data")
+        if source_data is None:
+            source_data = {k: v for k, v in rec.items() if k not in ("email", "_source_data", "_source_columns")}
+            if rec.get("email") is not None:
+                source_data["Email"] = rec.get("email")
+        source_columns = rec.get("_source_columns") or list(source_data)
+        rows.append((list_id, email, json.dumps(source_data, ensure_ascii=False, default=str),
+                     json.dumps(source_columns, ensure_ascii=False)))
+    if not rows:
+        if upload:
+            rows_in_file = upload.get("rows_in_file", 0)
+            record_upload(category, upload["file_name"], rows_in_file, 0, max(rows_in_file, 0),
+                          upload.get("list_name"), upload.get("file_size_bytes"), upload.get("uploaded_by"),
+                          list_id=list_id)
+        return 0
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TEMP TABLE _lf_email_records_in "
+                    "(ord BIGINT, list_id INTEGER, email TEXT, source_data TEXT, source_columns TEXT) ON COMMIT DROP")
+        _copy_rows(cur, "_lf_email_records_in", ((i, *r) for i, r in enumerate(rows)))
+        cur.execute(
+            f"INSERT INTO {emails_t} (list_id, email, source_data, source_columns) "
+            "SELECT list_id, email, source_data::jsonb, source_columns::jsonb "
+            "FROM _lf_email_records_in ORDER BY ord "
+            "ON CONFLICT (list_id, email) DO NOTHING"
+        )
+        inserted = cur.rowcount
+        if upload:
+            _log_merge(cur, category, list_id, upload, inserted,
+                       max(upload.get("rows_in_file", 0) - inserted, 0))
     return inserted
 
 
@@ -1090,9 +1158,14 @@ def add_mql_record(list_id: int, record: dict, uploaded_by: str | None = None, l
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            f"INSERT INTO mql_emails (list_id, email, {', '.join(MQL_DETAIL_COLUMNS)}) "
-            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (list_id, email) DO NOTHING",
-            (list_id, email, *details),
+            f"INSERT INTO mql_emails (list_id, email, {', '.join(MQL_DETAIL_COLUMNS)}, source_data, source_columns) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (list_id, email) DO NOTHING",
+            (list_id, email, *details, json.dumps({
+                "First Name": record.get("first_name", ""), "Last Name": record.get("last_name", ""),
+                "Company": record.get("company", ""), "Title": record.get("job_title", ""),
+                "Email": email,
+            }, ensure_ascii=False, default=str),
+             json.dumps(["First Name", "Last Name", "Company", "Title", "Email"], ensure_ascii=False)),
         )
         inserted = cur.rowcount
         _log_merge(cur, "mql", list_id, {"file_name": SINGLE_ENTRY_FILE_NAME, "rows_in_file": 1,
@@ -1177,7 +1250,7 @@ def get_email_records(
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     df = _fetch_df(
         f"""
-        SELECT e.id, e.email, e.list_id, l.name AS list_name, e.created_at{details},
+        SELECT e.id, e.email, e.list_id, l.name AS list_name, e.created_at, e.source_data, e.source_columns{details},
                COUNT(*) OVER () AS total
         FROM {emails_t} e JOIN {lists_t} l ON l.id = e.list_id
         {where_sql}
@@ -1196,6 +1269,37 @@ def get_email_records(
         return df.drop(columns=["total"]), total
     total = int(df["total"].iloc[0])
     return df.drop(columns=["total"]), total
+
+
+def get_email_record_columns(category: str, search: str | None = None,
+                             list_ids: list[int] | None = None) -> list[str]:
+    """Return uploaded headers across the matching records, newest source order first."""
+    _, emails_t = _tables(category)
+    where, params = [], []
+    term = (search or "").strip()
+    if term:
+        where.append("e.email ILIKE %s")
+        params.append(_like_contains(term))
+    if list_ids:
+        where.append("e.list_id = ANY(%s)")
+        params.append(sorted({int(i) for i in list_ids}))
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    df = _fetch_df(
+        f"""
+        SELECT value FROM (
+            SELECT DISTINCT ON (col.value) col.value, e.created_at, e.id, col.ordinality
+            FROM {emails_t} e
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+                COALESCE(e.source_columns, '[]'::jsonb)
+            ) WITH ORDINALITY AS col(value, ordinality)
+            {where_sql}
+            ORDER BY col.value, e.created_at DESC, e.id DESC, col.ordinality
+        ) headers
+        ORDER BY created_at DESC, id DESC, ordinality
+        """,
+        tuple(params),
+    )
+    return df["value"].tolist() if not df.empty else []
 
 
 SEARCH_RESULT_COLUMNS = ["category", "category_label", "email", "list_id", "list_name", "created_at",
@@ -1301,9 +1405,8 @@ def rename_bounce_list(list_id: int, new_name: str) -> None:
 def store_records(category: str, list_name: str, records: list[dict], upload: dict | None = None) -> tuple[int, int]:
     """Save contact records into a named list of any category, creating the list if needed.
 
-    Master keeps the full record (upsert_master_contacts); MQL keeps the email plus name, company
-    and title (upsert_mql_records); Unsub / Bounce keep only the email (upsert_emails); all with
-    the same per-list de-duplication as a file import. `upload` is logged in upload_history as
+    Master keeps its standard contact fields; email categories keep the email and supplied fields
+    in source_data. All use per-list de-duplication. `upload` is logged in upload_history as
     with those functions. Returns (list_id, rows written).
     """
     if category == "master":
@@ -1312,7 +1415,7 @@ def store_records(category: str, list_name: str, records: list[dict], upload: di
     list_id = get_or_create_email_list(category, list_name)
     if category == "mql":
         return list_id, upsert_mql_records(list_id, records, upload=upload)
-    return list_id, upsert_emails(category, list_id, [r.get("email") for r in records], upload=upload)
+    return list_id, upsert_email_records(category, list_id, records, upload=upload)
 
 
 # --------------------------------------------------------------------------- #

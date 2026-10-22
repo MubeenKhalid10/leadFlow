@@ -4,8 +4,13 @@ LeadFlow — database backup (read-only Excel export)
 
 Exports the saved records of one category (Master, MQL, Bounce or Unsubscribed),
 or all four at once, as one Excel workbook (.xlsx). Each category gets its own
-sheet holding exactly the columns of its database table (read from the database,
-in table order) and each value as PostgreSQL writes it as text; nothing is added.
+sheet holding the columns of its database table (read from the database, in table
+order; LeadFlow's own id, list_id and created_at are left out) and each value as PostgreSQL writes it as text.
+
+MQL, Bounce and Unsubscribed records keep the file's own columns in source_data
+(JSON). Those are expanded into real columns, after the table's own, in the order
+they were uploaded, so the sheet carries every column the user uploaded. A file
+header that is the same as a table column gets " (uploaded)" appended.
 
 An Excel sheet holds at most 1,048,576 rows, so a category with more than SHEET_ROWS
 records continues on a new sheet in the same workbook: "Master (1)", "Master (2)", …
@@ -124,12 +129,54 @@ def table_columns(cur, table: str) -> list[str]:
     return cols
 
 
-def _select_sql(table: str, columns: list[str]) -> str:
-    # ::text gives each value exactly as PostgreSQL writes it (NULL stays NULL -> empty cell).
-    cols = ", ".join(f't."{c}"::text AS "{c}"' for c in columns)
+# Holds the uploaded columns of MQL / Bounce / Unsub records; exported expanded, not as JSON.
+UPLOAD_JSON_COLUMNS = ("source_data", "source_columns")
+# LeadFlow's own bookkeeping, not part of any uploaded file: id is used for ordering; none is exported.
+INTERNAL_COLUMNS = ("id", "list_id", "created_at")
+EXCEL_MAX_COLUMNS = 16_384
+
+
+def uploaded_columns(cur, table: str) -> list[str]:
+    """Every header found in the table's uploaded rows, in the order first uploaded."""
+    cur.execute(
+        f"""SELECT header FROM (
+                SELECT DISTINCT ON (h.header) h.header, t.id, h.prio, h.ord
+                FROM {table} t
+                CROSS JOIN LATERAL (
+                    SELECT value AS header, 0 AS prio, ordinality AS ord
+                    FROM jsonb_array_elements_text(COALESCE(t.source_columns, '[]'::jsonb)) WITH ORDINALITY
+                    UNION ALL
+                    SELECT key, 1, 0 FROM jsonb_object_keys(
+                        CASE WHEN jsonb_typeof(t.source_data) = 'object' THEN t.source_data ELSE '{{}}'::jsonb END) AS key
+                ) h
+                ORDER BY h.header, t.id, h.prio, h.ord
+            ) first_seen ORDER BY id, prio, ord"""
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def category_layout(cur, table: str) -> tuple[list[str], str, tuple]:
+    """(header row, SELECT sql, sql params) for one table. Values are ::text, exactly as PostgreSQL
+    writes them (NULL stays NULL -> empty cell)."""
+    columns = table_columns(cur, table)
+    base = [c for c in columns if c not in UPLOAD_JSON_COLUMNS and c not in INTERNAL_COLUMNS]
+    parts = [f't."{c}"::text' for c in base]
+    headers, params = list(base), []
+    if all(c in columns for c in UPLOAD_JSON_COLUMNS):
+        taken = set(base)
+        for name in uploaded_columns(cur, table):
+            header = name
+            while header in taken:
+                header += " (uploaded)"
+            taken.add(header)
+            headers.append(header)
+            parts.append("t.source_data ->> %s")
+            params.append(name)
+    if len(headers) > EXCEL_MAX_COLUMNS:
+        raise BackupError(f"{table} has {len(headers):,} columns; an Excel sheet holds at most {EXCEL_MAX_COLUMNS:,}.")
     # t."id" is the table's numeric id; a bare "id" would sort the text output column instead.
     order = ' ORDER BY t."id"' if "id" in columns else ""
-    return f"SELECT {cols} FROM {table} t{order}"
+    return headers, f"SELECT {', '.join(parts)} FROM {table} t{order}", tuple(params)
 
 
 # --------------------------------------------------------------------------- #
@@ -229,10 +276,11 @@ def _write_workbook_parts(zf: zipfile.ZipFile, sheets: list[str]) -> None:
     zf.writestr("xl/styles.xml", _STYLES)
 
 
-def _write_table(conn, table, columns, open_sheet, batch_size, on_rows, sheet_rows) -> int:
+def _write_table(conn, table, layout, open_sheet, batch_size, on_rows, sheet_rows) -> int:
     """Stream one table into sheets: open_sheet(1) returns a text file for the first sheet's XML,
     open_sheet(2) the next once a sheet holds sheet_rows records. Each sheet starts with the
     header row (the column names). Returns the rows written."""
+    columns, sql, params = layout
     letters = _column_letters(len(columns))
     header = _row_xml(1, columns, letters, ' s="1"')
     written = in_sheet = 0
@@ -242,7 +290,7 @@ def _write_table(conn, table, columns, open_sheet, batch_size, on_rows, sheet_ro
     named = conn.cursor(name=f"lf_backup_{table}")
     named.itersize = batch_size
     try:
-        named.execute(_select_sql(table, columns))
+        named.execute(sql, params)
         while rows := named.fetchmany(batch_size):
             parts = []
             for row in rows:
@@ -256,7 +304,7 @@ def _write_table(conn, table, columns, open_sheet, batch_size, on_rows, sheet_ro
                 for v in row:
                     if v is not None and len(v) > EXCEL_MAX_CELL_CHARS:
                         raise BackupError(
-                            f"A value in {table} (record id {row[0]}) is longer than the "
+                            f"A value in {table} (sheet row {in_sheet + 2}) is longer than the "
                             f"{EXCEL_MAX_CELL_CHARS:,} characters an Excel cell can hold, so it can't be backed up "
                             "to Excel without losing part of it.")
                 in_sheet += 1
@@ -298,7 +346,7 @@ def write_backup(scope: str = "all", dest_dir: Path | None = None, *, batch_size
             cur.execute("SET LOCAL TimeZone = 'UTC'")  # timestamps written the same way on every server
             expected, columns = {}, {}
             for cat in cats:
-                columns[cat] = table_columns(cur, TABLES[cat])
+                columns[cat] = category_layout(cur, TABLES[cat])
                 cur.execute(f"SELECT COUNT(*) FROM {TABLES[cat]}")
                 expected[cat] = int(cur.fetchone()[0])
             expected_total = sum(expected.values())

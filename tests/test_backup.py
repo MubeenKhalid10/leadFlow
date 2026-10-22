@@ -27,10 +27,12 @@ NAME_RE = re.compile(r"^LeadFlow(?:_(Master|MQL|Bounce|Unsubscribed))?_Backup_(\
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 DAY = dt.date(2026, 10, 21)
 # The tables' own columns, exactly as db.SCHEMA_DDL defines them; a backup must hold these and nothing else.
-MASTER_COLUMNS = ["id", "list_id", "email", "first_name", "last_name", "company", "job_title", "industry",
-                  "location", "created_at"]
-EMAIL_COLUMNS = ["id", "list_id", "email", "created_at"]
+MASTER_COLUMNS = ["email", "first_name", "last_name", "company", "job_title", "industry",
+                  "location"]
+# Email categories also hold the file's own columns (source_data JSON); the backup expands those after these.
+EMAIL_COLUMNS = ["email"]
 MQL_COLUMNS = EMAIL_COLUMNS + ["first_name", "last_name", "company", "job_title"]  # added by db._ensure_mql_details
+JSON_COLUMNS = ["source_data", "source_columns"]
 COLUMNS = {"master": MASTER_COLUMNS, "mql": MQL_COLUMNS, "bounce": EMAIL_COLUMNS, "unsub": EMAIL_COLUMNS}
 SHEET_LABELS = {"master": "Master", "mql": "MQL", "bounce": "Bounce", "unsub": "Unsubscribed"}
 SEEDED_COUNTS = {"master": 3, "mql": 2, "bounce": 1, "unsub": 3}
@@ -81,12 +83,12 @@ def _read_xlsx(path):
 
 def _assert_matches_db(category, header, rows):
     """The sheet holds the table's columns only, and every row with its actual values."""
-    assert header == COLUMNS[category]
+    assert header[:len(COLUMNS[category])] == COLUMNS[category]
     db_rows = _db_rows(category)
     assert len(rows) == len(db_rows)
     for got, want in zip(rows, db_rows):
         assert len(got) == len(header)
-        for col, g, w in zip(header, got, want):
+        for col, g, w in zip(header, got[:len(want)], want):
             if w is None:
                 assert g == "", col
             elif isinstance(w, dt.datetime):
@@ -134,7 +136,9 @@ def test_sheet_names():
 def test_table_columns_come_from_the_database():
     with db.get_conn() as conn:
         cur = conn.cursor()
-        assert {c: backup.table_columns(cur, t) for c, t in backup.TABLES.items()} == COLUMNS
+        got = {c: [x for x in backup.table_columns(cur, t) if x not in JSON_COLUMNS + ["id", "list_id", "created_at"]]
+               for c, t in backup.TABLES.items()}
+        assert got == COLUMNS
 
 
 # --------------------------------------------------------------------------- #
@@ -164,7 +168,7 @@ def test_master_backup_keeps_values_exactly_as_text(seeded):
     assert ann["industry"] == "0012"  # leading zero kept
     assert ann["last_name"] == "O'Neil, Jr." and ann["company"] == 'Acme "Labs" & <Co>'
     assert ann["job_title"] == "CTO\nand founder" and ann["location"] == "Zürich a\rb x_x0041_y"
-    assert ann["id"] == "1"  # ids stay text too
+    assert "id" not in header and "list_id" not in header  # internal keys are not exported
     bob = next(dict(zip(header, r)) for r in rows if r[header.index("first_name")] == "Bob")
     assert bob["company"] == "" and bob["industry"] == ""
 
@@ -174,7 +178,7 @@ def test_header_row_is_bold_and_frozen(seeded):
         sheet = zf.read("xl/worksheets/sheet1.xml").decode()
     assert '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' in sheet
     first_row = sheet.split('<row r="1">', 1)[1].split("</row>", 1)[0]
-    assert first_row.count('s="1"') == len(MQL_COLUMNS)  # style 1 = bold font
+    assert first_row.count('s="1"') == first_row.count("<c ")  # style 1 = bold font, on every header cell
     assert '<row r="2">' in sheet and 's="1"' not in sheet.split('<row r="2">', 1)[1]
 
 
@@ -196,7 +200,7 @@ def test_all_backup_keeps_empty_categories_as_header_only():
     assert result.filename == "LeadFlow_Backup_1_records_2026-10-21.xlsx"
     sheets = _read_xlsx(result.path)
     assert sheets["Master"] == (MASTER_COLUMNS, [])
-    assert sheets["MQL"][1][0][2] == "a@x.com"
+    assert sheets["MQL"][1][0][0] == "a@x.com"
 
 
 @pytest.mark.parametrize("scope", ["all", "master"])
@@ -326,7 +330,7 @@ def _check_master_sheets(result, total, sheet_rows):
         assert next(rows) == MASTER_COLUMNS
         in_sheet = 0
         for row in rows:
-            assert row[0] == str(expected_id)
+            assert row[0] == f"person{expected_id}@example.com"  # id order
             expected_id += 1
             in_sheet += 1
         assert 0 < in_sheet <= sheet_rows
@@ -386,7 +390,7 @@ def test_interrupted_export_leaves_no_file(seeded, backup_tmp, scope):
 
 
 def test_database_error_leaves_no_file(seeded, backup_tmp, monkeypatch):
-    monkeypatch.setattr(backup, "_select_sql", lambda table, columns: "SELECT * FROM no_such_table")
+    monkeypatch.setattr(backup, "category_layout", lambda cur, table: (["id"], "SELECT * FROM no_such_table", ()))
     with pytest.raises(Exception, match="no_such_table"):
         backup.write_backup("all")
     assert list(backup_tmp.iterdir()) == []
@@ -395,9 +399,12 @@ def test_database_error_leaves_no_file(seeded, backup_tmp, monkeypatch):
 @pytest.mark.parametrize("scope", ["all", "master"])
 def test_short_export_is_rejected_not_named_as_complete(seeded, backup_tmp, monkeypatch, scope):
     # A query that silently drops a row must fail the count check rather than produce a smaller "backup".
-    real = backup._select_sql
-    monkeypatch.setattr(backup, "_select_sql",
-                        lambda table, columns: real(table, columns).replace(" ORDER BY", " WHERE t.id > 1 ORDER BY"))
+    real = backup.category_layout
+
+    def short(cur, table):
+        headers, sql, params = real(cur, table)
+        return headers, sql.replace(" ORDER BY", " WHERE t.id > 1 ORDER BY"), params
+    monkeypatch.setattr(backup, "category_layout", short)
     with pytest.raises(backup.BackupError, match="incomplete"):
         backup.write_backup(scope)
     assert list(backup_tmp.iterdir()) == []
@@ -515,3 +522,24 @@ def test_page_failed_backup_reports_an_error(seeded, monkeypatch):
     assert "db_backup" not in at.session_state
     assert any("The backup didn't finish" in str(e.value) for e in at.error)
     assert not at.success
+
+
+# --------------------------------------------------------------------------- #
+# MQL / Bounce / Unsub keep every uploaded column
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("category", ["mql", "bounce", "unsub"])
+def test_email_categories_export_every_uploaded_column(category, backup_tmp):
+    cols = ["Email", "Full Name", "Reason", "id", "Phone"]
+    db.store_records(category, "L1", [
+        {"email": "A@x.com", "_source_columns": cols,
+         "_source_data": {"Email": "A@x.com", "Full Name": "Ann", "Reason": None, "id": "007", "Phone": "0123"}},
+        {"email": "b@x.com", "_source_columns": ["Email", "Extra"],
+         "_source_data": {"Email": "b@x.com", "Extra": "=1+1"}},
+    ])
+    header, rows = _read_xlsx(backup.write_backup(category, day=DAY).path)[SHEET_LABELS[category]]
+    assert header[:len(COLUMNS[category])] == COLUMNS[category] and "list_id" not in header
+    uploaded = header[len(COLUMNS[category]):]
+    assert uploaded == ["Email", "Full Name", "Reason", "id", "Phone", "Extra"]
+    first, second = (dict(zip(header, r)) for r in rows)
+    assert (first["Email"], first["Full Name"], first["Reason"], first["id"], first["Phone"]) ==         ("A@x.com", "Ann", "", "007", "0123")
+    assert second["Extra"] == "=1+1" and second["Full Name"] == ""

@@ -8,11 +8,11 @@ against. Four categories, one tab each:
   * Master File — full contact records (deduped by email globally). New uploads
     are MERGED into the existing data: existing emails are skipped, new ones
     are appended, nothing is ever replaced.
-  * MQL / Bounce / Unsub — email-only lists. Every upload is logged with file
-    name, record count and date/time (upload history).
+  * MQL / Bounce / Unsub — email-keyed lists that retain every uploaded column.
+    Every upload is logged with file name, record count and date/time.
 
-A search box above the tabs finds an email in all four categories at once, and the
-MQL tab can switch to a paged List view of its records.
+A search box above the tabs finds an email in all four categories at once. Each
+suppression tab can switch to a paged List view of its records.
 
 All counts shown here are queried live from PostgreSQL (see db.py).
 """
@@ -32,7 +32,7 @@ from dataio import (
     MAX_COMPRESSED_UPLOAD_BYTES,
     MAX_UNCOMPRESSED_UPLOAD_BYTES,
     auto_map_columns,
-    extract_emails_from_file,
+    extract_email_records,
     extract_mql_records,
     forget_file,
     get_upload_size,
@@ -983,7 +983,7 @@ with tab_master:
 
 
 # ---------------------------------------------------------------------------- #
-# MQL / BOUNCE / UNSUB — email-only categories, same UI each
+# MQL / BOUNCE / UNSUB — email-keyed categories with uploaded row data
 # ---------------------------------------------------------------------------- #
 LIST_VIEW_SORTS = {"Newest first": "newest", "Oldest first": "oldest", "Email A–Z": "email_asc", "Email Z–A": "email_desc"}
 LIST_VIEW_PAGE_SIZES = (25, 50, 100)
@@ -1076,7 +1076,7 @@ def render_record_list(category: str):
     with theme.card(f"{category}_records"):
         theme.section_header(
             None, f"All {label} records",
-            "Every saved email, one row for each list it's in. Filter, sort and page through them.", "table_rows",
+            "Every saved record, with uploaded columns preserved. Filter, sort and page through them.", "table_rows",
         )
         try:
             lists_df = db.get_email_lists(category)
@@ -1102,6 +1102,7 @@ def render_record_list(category: str):
                 page = st.session_state[page_key] = pages
                 rows, total = db.get_email_records(category, search, chosen, LIST_VIEW_SORTS[sort_label], size,
                                                    (page - 1) * size)
+            source_columns = db.get_email_record_columns(category, search, chosen)
         except Exception as e:
             theme.friendly_error(f"Couldn't load your {label} records", "Try refreshing the page.", e)
             return
@@ -1112,11 +1113,31 @@ def render_record_list(category: str):
                 theme.empty_state("inbox", f"No {label} records yet", "Switch to Standard view to add a file.")
             return
 
-        table = {}
-        if category == "mql":  # MQL entries carry contact details, in the Add Single Entry form's order
-            table = {label: rows[col] for label, col in MQL_ENTRY_FIELDS if col != "email"}
-        table.update({"Email": rows["email"], "List": rows["list_name"], "Added": rows["created_at"].map(fmt_datetime)})
-        st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+        payload_rows = []
+        for row in rows.itertuples(index=False):
+            payload = row.source_data if isinstance(row.source_data, dict) else {}
+            if not payload:
+                payload = {"Email": row.email}
+                if category == "mql":
+                    for field_label, col in MQL_ENTRY_FIELDS:
+                        value = getattr(row, col, None)
+                        if col != "email" and pd.notna(value):
+                            payload[field_label] = value
+            payload_rows.append(payload)
+            row_columns = row.source_columns if isinstance(row.source_columns, list) else list(payload)
+            source_columns.extend(col for col in row_columns if col in payload and col not in source_columns)
+            source_columns.extend(col for col in payload if col not in source_columns)
+        source_columns = list(dict.fromkeys(source_columns))
+        table = pd.DataFrame(payload_rows, columns=source_columns)
+        list_column = "List"
+        while list_column in table.columns:
+            list_column += " (LeadFlow)"
+        added_column = "Added"
+        while added_column in table.columns or added_column == list_column:
+            added_column += " (LeadFlow)"
+        table[list_column] = rows["list_name"].to_list()
+        table[added_column] = rows["created_at"].map(fmt_datetime).to_list()
+        st.dataframe(table, width="stretch", hide_index=True)
         info, prev_col, next_col = st.columns([4, 1, 1], vertical_alignment="center")
         start = (page - 1) * size + 1
         info.caption(f"Showing {start:,}–{start + len(rows) - 1:,} of {total:,} records · page {page:,} of {pages:,}")
@@ -1147,8 +1168,7 @@ def render_email_category(category: str, list_view: bool = False):
     with theme.card(f"{category}_add"):
         theme.section_header(
             None, f"Add to {label}",
-            "Upload files with an email column — LeadFlow finds it automatically. "
-            + ("Names, company and job title are saved too when your file has them. " if category == "mql" else "")
+            "Upload files with an email column — LeadFlow finds it automatically. All columns are kept as uploaded. "
             + "Emails already saved are skipped.",
             "upload_file",
         )
@@ -1197,20 +1217,20 @@ def render_email_category(category: str, list_view: bool = False):
                                 fdf = load_file(f)
                             rows_in_file = len(fdf)
                             # MQL keeps name, company and title too when the file has them.
-                            emails = extract_mql_records(fdf) if category == "mql" else extract_emails_from_file(fdf)
-                            if emails is None or len(emails) == 0:
+                            records = extract_mql_records(fdf) if category == "mql" else extract_email_records(fdf)
+                            if records is None or len(records) == 0:
                                 skipped_files.append(f.name)
                                 forget_file(f)
                                 continue
-                            with st.spinner(f"Saving {len(emails):,} emails from {f.name}…"):
+                            with st.spinner(f"Saving {len(records):,} records from {f.name}…"):
                                 # Logged in upload_history in the same transaction, so it can be reverted.
                                 meta = upload_meta(f, rows_in_file, clean_name)
                                 if category == "mql":
-                                    written = db.upsert_mql_records(list_id, emails, upload=meta)
+                                    written = db.upsert_mql_records(list_id, records, upload=meta)
                                 else:
-                                    written = db.upsert_emails(category, list_id, emails.tolist(), upload=meta)
+                                    written = db.upsert_email_records(category, list_id, records, upload=meta)
                             written_total += written
-                            del fdf, emails
+                            del fdf, records
                             forget_file(f)
                         messages = []
                         if skipped_files:
@@ -1274,7 +1294,9 @@ with tab_mql:
     render_email_category("mql", list_view=mql_view == MQL_VIEWS[1])
 
 with tab_bounce:
-    render_email_category("bounce")
+    bounce_view = st.segmented_control("Bounce view", MQL_VIEWS, required=True, key="bounce_view")
+    render_email_category("bounce", list_view=bounce_view == MQL_VIEWS[1])
 
 with tab_unsub:
-    render_email_category("unsub")
+    unsub_view = st.segmented_control("Unsubscribed view", MQL_VIEWS, required=True, key="unsub_view")
+    render_email_category("unsub", list_view=unsub_view == MQL_VIEWS[1])
